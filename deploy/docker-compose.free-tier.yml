@@ -1,7 +1,14 @@
 # RemuneData em EC2 t3.micro (1 GB de RAM + 2 GB de swap). Tudo com limites de memória.
 # Nginx do host serve o frontend e faz proxy para a API em 127.0.0.1:8000.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
+    logging: *logging
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
@@ -25,6 +32,7 @@ services:
     mem_limit: 400m
 
   redis:
+    logging: *logging
     image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --maxmemory 48mb --maxmemory-policy allkeys-lru --save ""
@@ -36,6 +44,7 @@ services:
     mem_limit: 64m
 
   app:
+    logging: *logging
     image: remunedata-api:prod
     restart: unless-stopped
     env_file: .env
@@ -48,17 +57,19 @@ services:
     mem_limit: 250m
 
   worker:
+    logging: *logging
     image: remunedata-api:prod
     restart: unless-stopped
     env_file: .env
-    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
     stop_grace_period: 30s
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    mem_limit: 250m
+    mem_limit: 300m
 
   scheduler:
+    logging: *logging
     image: remunedata-api:prod
     restart: unless-stopped
     env_file: .env
