@@ -191,7 +191,11 @@ async def test_checkout_success(client, db_session, override_get_session, valid_
             new=AsyncMock(return_value=mock_customer),
         ),
         patch(
-            "app.api.endpoints.subscriptions.abacatepay_client.create_billing",
+            "app.api.endpoints.subscriptions.abacatepay_client.ensure_product",
+            new=AsyncMock(return_value="prod_test_1"),
+        ),
+        patch(
+            "app.api.endpoints.subscriptions.abacatepay_client.create_checkout",
             new=AsyncMock(return_value=mock_billing),
         ),
     ):
@@ -275,7 +279,11 @@ async def test_checkout_billing_error(
             new=AsyncMock(return_value=mock_customer),
         ),
         patch(
-            "app.api.endpoints.subscriptions.abacatepay_client.create_billing",
+            "app.api.endpoints.subscriptions.abacatepay_client.ensure_product",
+            new=AsyncMock(return_value="prod_test_1"),
+        ),
+        patch(
+            "app.api.endpoints.subscriptions.abacatepay_client.create_checkout",
             new=AsyncMock(side_effect=Exception("Billing error")),
         ),
     ):
@@ -313,7 +321,7 @@ async def test_webhook_invalid_secret(client, db_session, override_get_session, 
 
 
 @pytest.mark.asyncio
-async def test_webhook_billing_paid_activates_subscription(
+async def test_webhook_checkout_completed_activates_subscription(
     client, db_session, override_get_session
 ):
     """POST /webhook billing.paid ativa assinatura pending."""
@@ -329,14 +337,20 @@ async def test_webhook_billing_paid_activates_subscription(
     await db_session.commit()
     await db_session.refresh(sub)
 
-    resp = await client.post(
-        "/api/v1/subscriptions/webhook?webhookSecret=",
-        json={
-            "event": "billing.paid",
-            "devMode": True,
-            "data": {"id": "bill_webhook_123", "status": "PAID"},
-        },
-    )
+    with patch(
+        "app.api.endpoints.subscriptions.abacatepay_client.get_checkout",
+        new=AsyncMock(return_value={"id": "bill_webhook_123", "status": "PAID"}),
+    ):
+        resp = await client.post(
+            "/api/v1/subscriptions/webhook?webhookSecret=",
+            json={
+                "id": "log_1",
+                "event": "checkout.completed",
+                "apiVersion": 2,
+                "devMode": True,
+                "data": {"checkout": {"id": "bill_webhook_123", "status": "PAID"}},
+            },
+        )
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
@@ -485,3 +499,85 @@ async def test_require_subscription_dep_with_active(client, db_session, override
     now = datetime.now(timezone.utc)
     assert sub.status == "active"
     assert sub.expires_at > now
+
+
+@pytest.mark.asyncio
+async def test_webhook_completed_nao_ativa_se_api_nao_confirma_pago(
+    client, db_session, override_get_session
+):
+    """Webhook forjado/sem pagamento: o corpo diz PAID, mas a API da AbacatePay diz PENDING."""
+    plan = await _create_plan(db_session)
+    sub = UserSubscription(
+        user_id="user-forjado",
+        plan_id=plan.id,
+        abacatepay_billing_id="bill_forjado_1",
+        status="pending",
+    )
+    db_session.add(sub)
+    await db_session.commit()
+    await db_session.refresh(sub)
+
+    with patch(
+        "app.api.endpoints.subscriptions.abacatepay_client.get_checkout",
+        new=AsyncMock(return_value={"id": "bill_forjado_1", "status": "PENDING"}),
+    ):
+        resp = await client.post(
+            "/api/v1/subscriptions/webhook?webhookSecret=",
+            json={
+                "event": "checkout.completed",
+                "data": {"checkout": {"id": "bill_forjado_1", "status": "PAID"}},
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["msg"] == "pagamento não confirmado"
+    await db_session.refresh(sub)
+    assert sub.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_webhook_completed_falha_ao_confirmar_retorna_502_para_retentativa(
+    client, db_session, override_get_session
+):
+    """Se a AbacatePay estiver fora do ar, devolve 502 (ela refaz a entrega depois)."""
+    plan = await _create_plan(db_session)
+    sub = UserSubscription(
+        user_id="user-502",
+        plan_id=plan.id,
+        abacatepay_billing_id="bill_502_1",
+        status="pending",
+    )
+    db_session.add(sub)
+    await db_session.commit()
+
+    with patch(
+        "app.api.endpoints.subscriptions.abacatepay_client.get_checkout",
+        new=AsyncMock(side_effect=Exception("indisponível")),
+    ):
+        resp = await client.post(
+            "/api/v1/subscriptions/webhook?webhookSecret=",
+            json={"event": "checkout.completed", "data": {"id": "bill_502_1"}},
+        )
+    assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_webhook_checkout_refunded_cancela_pendente(client, db_session, override_get_session):
+    plan = await _create_plan(db_session)
+    sub = UserSubscription(
+        user_id="user-refund-v2",
+        plan_id=plan.id,
+        abacatepay_billing_id="bill_refund_v2",
+        status="pending",
+    )
+    db_session.add(sub)
+    await db_session.commit()
+    await db_session.refresh(sub)
+
+    resp = await client.post(
+        "/api/v1/subscriptions/webhook?webhookSecret=",
+        json={"event": "checkout.refunded", "data": {"checkout": {"id": "bill_refund_v2"}}},
+    )
+    assert resp.status_code == 200
+    await db_session.refresh(sub)
+    assert sub.status == "canceled"

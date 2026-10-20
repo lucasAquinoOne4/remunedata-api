@@ -3,6 +3,7 @@ app/api/endpoints/subscriptions.py
 Endpoints para gerenciamento de assinaturas via AbacatePay.
 """
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -89,18 +90,6 @@ def _verify_webhook_secret(provided: str) -> bool:
     return hmac.compare_digest(str(provided), str(expected))
 
 
-def _verify_hmac_signature(body: bytes, signature: str) -> bool:
-    """
-    Valida assinatura HMAC-SHA256 do corpo do webhook.
-    Retorna True se o secret não estiver configurado (dev) ou se a assinatura bater.
-    """
-    secret = settings.abacatepay_webhook_secret
-    if not secret or not signature:
-        return True  # degrada graciosamente em dev
-    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature.removeprefix("sha256="))
-
-
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -176,13 +165,17 @@ async def create_checkout(
 
     # Criar cobranÃ§a
     try:
-        billing = await abacatepay_client.create_billing(
-            customer_id=customer_id,
+        product_id = await abacatepay_client.ensure_product(
             plan_slug=plan.slug,
             plan_name=plan.name,
             plan_description=plan.description,
-            price_cents=int(plan.price_brl * 100),
+            price_cents=int(round(plan.price_brl * 100)),
+        )
+        billing = await abacatepay_client.create_checkout(
+            customer_id=customer_id,
+            product_id=product_id,
             external_id=external_id,
+            plan_slug=plan.slug,
         )
     except Exception as e:
         import httpx
@@ -266,61 +259,116 @@ async def send_support_message(
     return msg
 
 
-@router.post("/webhook", summary="Receptor de webhooks AbacatePay")
+def _verify_signature(body: bytes, signature: str) -> bool:
+    """
+    Valida o X-Webhook-Signature da AbacatePay v2: HMAC-SHA256 do corpo bruto, em base64,
+    com a chave pública publicada na documentação (ABACATEPAY_PUBLIC_KEY).
+    Sem chave configurada ou sem header, a verificação é pulada (o webhookSecret continua valendo).
+    """
+    key = settings.abacatepay_public_key
+    if not key or not signature:
+        return True
+    expected = base64.b64encode(hmac.new(key.encode(), body, hashlib.sha256).digest()).decode()
+    return hmac.compare_digest(expected, signature)
+
+
+def _checkout_id_candidates(payload: dict) -> list[str]:
+    """
+    Coleta possíveis ids de checkout no payload do evento (o formato exato de `data` varia por
+    evento): valores de chaves `id`/`checkoutId`/`billingId` e qualquer texto com prefixo `bill_`.
+    """
+    found: list[str] = []
+
+    def walk(node, key=""):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, k)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, key)
+        elif isinstance(node, str) and node:
+            if node.startswith("bill_") or key in ("checkoutId", "billingId"):
+                found.append(node)
+
+    walk(payload.get("data", {}))
+    data = payload.get("data") or {}
+    for holder in (data, data.get("checkout") or {}, data.get("billing") or {}):
+        if isinstance(holder, dict) and isinstance(holder.get("id"), str):
+            found.append(holder["id"])
+    return list(dict.fromkeys(found))  # sem duplicatas, preservando a ordem
+
+
+async def _find_subscription(session: AsyncSession, candidates: list[str]):
+    for candidate in candidates:
+        stmt = select(UserSubscription).where(UserSubscription.abacatepay_billing_id == candidate)
+        sub = (await session.execute(stmt)).scalar_one_or_none()
+        if sub is not None:
+            return sub
+    return None
+
+
+@router.post("/webhook", summary="Receptor de webhooks AbacatePay (API v2)")
 async def webhook(
     request: Request,
     webhook_secret: str = Query(..., alias="webhookSecret"),
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Recebe notificações da AbacatePay.
-    Validações de segurança:
+    Recebe notificações da AbacatePay v2 (`checkout.completed`, `checkout.refunded`).
+    Segurança:
       1. webhookSecret na query string (obrigatório)
-      2. Assinatura HMAC-SHA256 no header X-Abacatepay-Signature (quando disponível)
+      2. X-Webhook-Signature (HMAC-SHA256 base64) quando a chave pública estiver configurada
+      3. O pagamento é CONFIRMADO consultando o checkout na API (status PAID); o corpo do
+         webhook sozinho nunca ativa uma assinatura.
     """
-    # 1. Validar secret da query string
     if not _verify_webhook_secret(webhook_secret):
         raise HTTPException(status_code=401, detail="Webhook secret inválido.")
 
-    # 2. Ler e validar HMAC do body
     body_bytes = await request.body()
-    hmac_header = request.headers.get("X-Abacatepay-Signature", "")
-    if hmac_header and not _verify_hmac_signature(body_bytes, hmac_header):
-        raise HTTPException(status_code=401, detail="Assinatura HMAC inválida.")
+    signature = request.headers.get("X-Webhook-Signature", "")
+    if signature and not _verify_signature(body_bytes, signature):
+        raise HTTPException(status_code=401, detail="Assinatura inválida.")
 
-    # 3. Parsear payload
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Payload inválido.")
 
     event: str = payload.get("event", "")
-    data: dict = payload.get("data", {})
     dev_mode: bool = payload.get("devMode", False)
+    logger.info(
+        f"Webhook AbacatePay recebido: event={event} devMode={dev_mode} id={payload.get('id')}"
+    )
 
-    logger.info(f"Webhook AbacatePay recebido: event={event} devMode={dev_mode}")
+    candidates = _checkout_id_candidates(payload)
 
-    if event == "billing.paid":
-        billing_id: str = data.get("id", "")
-        if not billing_id:
-            return {"ok": True, "msg": "billing_id ausente, ignorado"}
+    if event in ("checkout.completed", "billing.paid"):
+        if not candidates:
+            return {"ok": True, "msg": "id do checkout ausente, ignorado"}
 
-        # Buscar assinatura pendente por billing_id (idempotência)
-        stmt = select(UserSubscription).where(UserSubscription.abacatepay_billing_id == billing_id)
-        result = await session.execute(stmt)
-        sub = result.scalar_one_or_none()
-
+        sub = await _find_subscription(session, candidates)
         if sub is None:
-            logger.warning(
-                f"Webhook billing.paid para billing {billing_id} sem assinatura pendente."
-            )
+            logger.warning(f"Webhook {event} sem assinatura pendente (ids={candidates}).")
             return {"ok": True, "msg": "assinatura não encontrada"}
 
         if sub.status == "active":
-            # Idempotência: já processado
-            return {"ok": True, "msg": "já processado"}
+            return {"ok": True, "msg": "já processado"}  # idempotência (retentativas)
 
-        # Ativar assinatura
+        # Confirma o pagamento direto na AbacatePay antes de liberar acesso
+        try:
+            checkout = await abacatepay_client.get_checkout(sub.abacatepay_billing_id)
+        except Exception as e:
+            logger.error(f"Falha ao confirmar checkout {sub.abacatepay_billing_id}: {e}")
+            # 5xx faz a AbacatePay tentar de novo (até 7 vezes em ~18 h)
+            raise HTTPException(status_code=502, detail="Não foi possível confirmar o pagamento.")
+
+        if str(checkout.get("status", "")).upper() != "PAID":
+            logger.warning(
+                f"Checkout {sub.abacatepay_billing_id} com status {checkout.get('status')}: "
+                "não ativado."
+            )
+            return {"ok": True, "msg": "pagamento não confirmado"}
+
         plan_result = await session.get(SubscriptionPlan, sub.plan_id)
         now = datetime.now(timezone.utc)
         sub.status = "active"
@@ -331,11 +379,8 @@ async def webhook(
         await session.commit()
         logger.info(f"Assinatura {sub.id} ativada para user {sub.user_id} até {sub.expires_at}")
 
-    elif event in ("billing.refunded", "billing.failed"):
-        billing_id = data.get("id", "")
-        stmt = select(UserSubscription).where(UserSubscription.abacatepay_billing_id == billing_id)
-        result = await session.execute(stmt)
-        sub = result.scalar_one_or_none()
+    elif event in ("checkout.refunded", "checkout.disputed", "billing.refunded", "billing.failed"):
+        sub = await _find_subscription(session, candidates)
         if sub and sub.status != "active":
             sub.status = "canceled"
             sub.updated_at = datetime.now(timezone.utc)

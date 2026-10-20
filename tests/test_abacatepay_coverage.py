@@ -1,142 +1,210 @@
 """
 tests/test_abacatepay_coverage.py
-Testes unitários de cobertura para o cliente AbacatePay e helpers de assinatura.
+Testes do cliente AbacatePay (API v2) e dos helpers de assinatura de webhook.
 """
 
+import base64
 import hashlib
 import hmac
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
+import respx
 
 from app.infra.abacatepay_client import AbacatePayClient
 
 # ────────────────────────────────────────────────────────
-# Testes do AbacatePayClient
+# Testes do AbacatePayClient (API v2)
 # ────────────────────────────────────────────────────────
 
+BASE = "https://api.abacatepay.com/v2"
+
+
+def _client() -> AbacatePayClient:
+    c = AbacatePayClient()
+    c._headers["Authorization"] = "Bearer abc_dev_test"
+    return c
+
 
 @pytest.mark.asyncio
-async def test_abacatepay_create_customer_success():
-    """create_customer retorna dados do campo 'data' na resposta."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "data": {"id": "cust_abc123", "metadata": {"name": "Test User"}},
-        "error": None,
-    }
-    mock_response.raise_for_status = MagicMock()
-
-    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)):
-        client = AbacatePayClient()
-        result = await client.create_customer(
-            name="Test User",
-            email="test@test.com",
-            cellphone="(11) 99999-9999",
-            tax_id="000.000.000-00",
-        )
+@respx.mock
+async def test_create_customer_success():
+    route = respx.post(f"{BASE}/customers/create").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "cust_abc123"}, "error": None})
+    )
+    result = await _client().create_customer(
+        "Test User", "t@t.com", "+5511999999999", "11144477735"
+    )
     assert result["id"] == "cust_abc123"
+    sent = route.calls.last.request
+    assert sent.headers["authorization"] == "Bearer abc_dev_test"
+    assert b'"taxId"' in sent.content
 
 
 @pytest.mark.asyncio
-async def test_abacatepay_create_customer_api_error():
-    """create_customer levanta ValueError quando AbacatePay retorna erro."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"data": None, "error": "invalid_tax_id"}
-    mock_response.raise_for_status = MagicMock()
-
-    with pytest.raises(ValueError, match="AbacatePay error"):
-        with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)):
-            client = AbacatePayClient()
-            await client.create_customer(
-                name="Test",
-                email="t@t.com",
-                cellphone="(11) 11111-1111",
-                tax_id="invalido",
-            )
+@respx.mock
+async def test_error_field_raises_value_error():
+    respx.post(f"{BASE}/customers/create").mock(
+        return_value=httpx.Response(200, json={"data": None, "error": "invalid_tax_id"})
+    )
+    with pytest.raises(ValueError, match="AbacatePay error: invalid_tax_id"):
+        await _client().create_customer("A", "b@b.com", "1", "x")
 
 
 @pytest.mark.asyncio
-async def test_abacatepay_create_billing_success():
-    """create_billing retorna id e url da cobrança criada."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "data": {
-            "id": "bill_xyz456",
-            "url": "https://pay.abacatepay.com/xyz456",
-            "status": "PENDING",
-        },
-        "error": None,
-    }
-    mock_response.raise_for_status = MagicMock()
-
-    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)):
-        client = AbacatePayClient()
-        result = await client.create_billing(
-            customer_id="cust_test",
-            plan_slug="essencial",
-            plan_name="Plano Essencial",
-            plan_description="Teste",
-            price_cents=699,
-            external_id="remunedata-test-essencial-001",
+@respx.mock
+async def test_http_error_propagates():
+    respx.post(f"{BASE}/customers/create").mock(
+        return_value=httpx.Response(
+            401, json={"success": False, "error": "API key version mismatch"}
         )
-    assert result["id"] == "bill_xyz456"
-    assert "pay.abacatepay.com" in result["url"]
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await _client().create_customer("A", "b@b.com", "1", "x")
 
 
 @pytest.mark.asyncio
-async def test_abacatepay_get_billing_success():
-    """get_billing retorna dados da cobrança pelo ID."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "data": {"id": "bill_abc", "status": "PAID"},
-        "error": None,
-    }
-    mock_response.raise_for_status = MagicMock()
+@respx.mock
+async def test_ensure_product_reaproveita_existente_e_usa_cache():
+    ext = AbacatePayClient.product_external_id("essencial", 699)
+    assert ext == "remunedata-essencial-699"
+    listing = respx.get(f"{BASE}/products/list").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "prod_outro", "externalId": "x"},
+                    {"id": "prod_ok", "externalId": ext},
+                ],
+                "pagination": {"hasMore": False, "next": None},
+            },
+        )
+    )
+    create = respx.post(f"{BASE}/products/create")
+    client = _client()
+    assert await client.ensure_product("essencial", "Plano", "desc", 699) == "prod_ok"
+    assert await client.ensure_product("essencial", "Plano", "desc", 699) == "prod_ok"
+    assert listing.call_count == 1  # segunda chamada vem do cache
+    assert not create.called
 
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_response)):
-        client = AbacatePayClient()
-        result = await client.get_billing("bill_abc")
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ensure_product_cria_quando_nao_existe_e_segue_paginacao():
+    respx.get(f"{BASE}/products/list").mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [], "pagination": {"hasMore": True, "next": "c2"}}),
+            httpx.Response(200, json={"data": [], "pagination": {"hasMore": False, "next": None}}),
+        ]
+    )
+    create = respx.post(f"{BASE}/products/create").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "prod_novo"}, "error": None})
+    )
+    assert await _client().ensure_product("anual", "Plano Anual", "d", 4999) == "prod_novo"
+    body = create.calls.last.request.content
+    assert b'"price":4999' in body.replace(b" ", b"") and b"BRL" in body
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ensure_product_corrida_de_criacao():
+    ext = AbacatePayClient.product_external_id("profissional", 1799)
+    respx.get(f"{BASE}/products/list").mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [], "pagination": {"hasMore": False}}),
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "prod_corrida", "externalId": ext}],
+                    "pagination": {"hasMore": False},
+                },
+            ),
+        ]
+    )
+    respx.post(f"{BASE}/products/create").mock(
+        return_value=httpx.Response(
+            400, json={"success": False, "error": "Product with externalId already exists"}
+        )
+    )
+    assert await _client().ensure_product("profissional", "P", "d", 1799) == "prod_corrida"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_checkout_payload_v2():
+    route = respx.post(f"{BASE}/checkouts/create").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "id": "bill_xyz",
+                    "url": "https://app.abacatepay.com/pay/bill_xyz",
+                    "status": "PENDING",
+                },
+                "error": None,
+            },
+        )
+    )
+    result = await _client().create_checkout("cust_1", "prod_1", "remunedata-ext-1", "essencial")
+    assert result["id"] == "bill_xyz"
+    import json
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["items"] == [{"id": "prod_1", "quantity": 1}]
+    assert sent["methods"] == ["PIX", "CARD"]
+    assert sent["customerId"] == "cust_1" and sent["externalId"] == "remunedata-ext-1"
+    assert sent["completionUrl"].endswith("/assinatura/sucesso?billing=remunedata-ext-1")
+    assert "frequency" not in sent  # não existe na v2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_checkout_sem_cartao_na_loja_cai_para_pix():
+    route = respx.post(f"{BASE}/checkouts/create").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "success": False,
+                    "data": None,
+                    "error": "CARD is not available for this store",
+                },
+            ),
+            httpx.Response(
+                200, json={"data": {"id": "bill_pix", "status": "PENDING"}, "error": None}
+            ),
+        ]
+    )
+    result = await _client().create_checkout("cust_1", "prod_1", "ext-2", "essencial")
+    assert result["id"] == "bill_pix"
+    import json
+
+    assert json.loads(route.calls[0].request.content)["methods"] == ["PIX", "CARD"]
+    assert json.loads(route.calls[1].request.content)["methods"] == ["PIX"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_checkout_outros_erros_400_nao_sao_engolidos():
+    respx.post(f"{BASE}/checkouts/create").mock(
+        return_value=httpx.Response(400, json={"success": False, "error": "customer not found"})
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await _client().create_checkout("cust_x", "prod_1", "ext-3", "essencial")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_checkout():
+    route = respx.get(f"{BASE}/checkouts/get").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"id": "bill_xyz", "status": "PAID"}, "error": None}
+        )
+    )
+    result = await _client().get_checkout("bill_xyz")
     assert result["status"] == "PAID"
-
-
-@pytest.mark.asyncio
-async def test_abacatepay_http_error_propagates():
-    """Cliente propaga HTTPStatusError quando backend retorna erro HTTP."""
-    mock_response = MagicMock()
-    mock_response.status_code = 502
-    with patch(
-        "httpx.AsyncClient.post",
-        new=AsyncMock(
-            side_effect=httpx.HTTPStatusError("Error", request=MagicMock(), response=mock_response)
-        ),
-    ):
-        client = AbacatePayClient()
-        with pytest.raises(httpx.HTTPStatusError):
-            await client.create_customer(
-                name="Test",
-                email="t@t.com",
-                cellphone="(11) 11111-1111",
-                tax_id="000.000.000-00",
-            )
-
-
-@pytest.mark.asyncio
-async def test_abacatepay_get_error_propagates():
-    """get_billing propaga erro quando AbacatePay retorna error field."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"data": None, "error": "not_found"}
-    mock_response.raise_for_status = MagicMock()
-
-    with pytest.raises(ValueError, match="AbacatePay error"):
-        with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_response)):
-            client = AbacatePayClient()
-            await client.get_billing("bill_inexistente")
+    assert route.calls.last.request.url.params["id"] == "bill_xyz"
 
 
 # ────────────────────────────────────────────────────────
@@ -171,44 +239,37 @@ def test_verify_webhook_secret_wrong():
         assert _verify_webhook_secret("wrong_secret") is False
 
 
-def test_verify_hmac_signature_no_secret():
-    """HMAC sem secret configurado (dev) aceita qualquer assinatura."""
-    from app.api.endpoints.subscriptions import _verify_hmac_signature
+def test_verify_signature_v2_sem_chave_ou_sem_header_passa():
+    from app.api.endpoints.subscriptions import _verify_signature
 
     with patch("app.api.endpoints.subscriptions.settings") as mock_settings:
-        mock_settings.abacatepay_webhook_secret = ""
-        assert _verify_hmac_signature(b"body", "sha256=anything") is True
+        mock_settings.abacatepay_public_key = ""
+        assert _verify_signature(b"body", "qualquer") is True
+        mock_settings.abacatepay_public_key = "k"
+        assert _verify_signature(b"body", "") is True
 
 
-def test_verify_hmac_signature_no_header():
-    """HMAC sem header também é aceito (dev mode)."""
-    from app.api.endpoints.subscriptions import _verify_hmac_signature
+def test_verify_signature_v2_valida_base64_e_rejeita_invalida():
+    from app.api.endpoints.subscriptions import _verify_signature
 
+    key = "chave-publica-teste"
+    body = b'{"event":"checkout.completed"}'
+    good = base64.b64encode(hmac.new(key.encode(), body, hashlib.sha256).digest()).decode()
     with patch("app.api.endpoints.subscriptions.settings") as mock_settings:
-        mock_settings.abacatepay_webhook_secret = "secret"
-        assert _verify_hmac_signature(b"body", "") is True
+        mock_settings.abacatepay_public_key = key
+        assert _verify_signature(body, good) is True
+        assert _verify_signature(body, "invalida") is False
+        assert _verify_signature(b"outro corpo", good) is False
 
 
-def test_verify_hmac_signature_valid():
-    """HMAC válido é aceito."""
-    from app.api.endpoints.subscriptions import _verify_hmac_signature
+def test_checkout_id_candidates_formatos_variados():
+    from app.api.endpoints.subscriptions import _checkout_id_candidates
 
-    secret = "my_webhook_secret"
-    body = b'{"event":"billing.paid"}'
-    expected_sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-    with patch("app.api.endpoints.subscriptions.settings") as mock_settings:
-        mock_settings.abacatepay_webhook_secret = secret
-        assert _verify_hmac_signature(body, expected_sig) is True
-
-
-def test_verify_hmac_signature_invalid():
-    """HMAC inválido é rejeitado."""
-    from app.api.endpoints.subscriptions import _verify_hmac_signature
-
-    with patch("app.api.endpoints.subscriptions.settings") as mock_settings:
-        mock_settings.abacatepay_webhook_secret = "my_secret"
-        assert _verify_hmac_signature(b"body", "sha256=invalido") is False
+    assert _checkout_id_candidates({"data": {"checkout": {"id": "bill_1"}}}) == ["bill_1"]
+    assert _checkout_id_candidates({"data": {"id": "bill_2", "customer": None}}) == ["bill_2"]
+    assert "bill_3" in _checkout_id_candidates({"data": {"items": [{"x": "bill_3"}]}})
+    assert _checkout_id_candidates({"data": {"checkoutId": "abc"}}) == ["abc"]
+    assert _checkout_id_candidates({"data": {}}) == []
 
 
 # ────────────────────────────────────────────────────────
@@ -217,40 +278,36 @@ def test_verify_hmac_signature_invalid():
 
 
 @pytest.mark.asyncio
-async def test_webhook_with_valid_hmac(client, db_session, override_get_session):
-    """POST /webhook com X-Abacatepay-Signature válida passa a validação HMAC."""
-    secret = "test_hmac_secret"
+async def test_webhook_with_valid_signature(client, db_session, override_get_session):
+    """POST /webhook com X-Webhook-Signature (base64) válida passa."""
+    secret, key = "test_secret", "chave-publica-teste"
     body = b'{"event":"unknown.event","devMode":true,"data":{}}'
-    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    sig = base64.b64encode(hmac.new(key.encode(), body, hashlib.sha256).digest()).decode()
 
     with patch("app.api.endpoints.subscriptions.settings") as mock_settings:
         mock_settings.abacatepay_webhook_secret = secret
+        mock_settings.abacatepay_public_key = key
         resp = await client.post(
             f"/api/v1/subscriptions/webhook?webhookSecret={secret}",
             content=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Abacatepay-Signature": sig,
-            },
+            headers={"Content-Type": "application/json", "X-Webhook-Signature": sig},
         )
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_webhook_with_invalid_hmac(client, db_session, override_get_session):
-    """POST /webhook com X-Abacatepay-Signature inválida retorna 401."""
-    secret = "test_hmac_secret"
-    body = b'{"event":"billing.paid","devMode":false,"data":{}}'
+async def test_webhook_with_invalid_signature(client, db_session, override_get_session):
+    """POST /webhook com X-Webhook-Signature inválida retorna 401."""
+    secret, key = "test_secret", "chave-publica-teste"
+    body = b'{"event":"checkout.completed","devMode":false,"data":{}}'
 
     with patch("app.api.endpoints.subscriptions.settings") as mock_settings:
         mock_settings.abacatepay_webhook_secret = secret
+        mock_settings.abacatepay_public_key = key
         resp = await client.post(
             f"/api/v1/subscriptions/webhook?webhookSecret={secret}",
             content=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Abacatepay-Signature": "sha256=invalido",
-            },
+            headers={"Content-Type": "application/json", "X-Webhook-Signature": "invalida"},
         )
     assert resp.status_code == 401
 
@@ -323,21 +380,6 @@ async def test_require_active_subscription_passes_with_sub(db_session, override_
     user = {"sub": "user-com-assinatura", "email": "with@sub.com"}
     result = await require_active_subscription(user=user, session=db_session)
     assert result == user
-
-
-@pytest.mark.asyncio
-async def test_abacatepay_post_manual_error_field(db_session):
-    """Testa o raise ValueError quando o body tem o campo 'error' e status 200."""
-    from app.infra.abacatepay_client import AbacatePayClient
-
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"error": "some_manually_returned_error"}
-
-    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)):
-        client = AbacatePayClient()
-        with pytest.raises(ValueError, match="AbacatePay error: some_manually_returned_error"):
-            await client.create_customer("A", "B", "C", "D")
 
 
 @pytest.mark.asyncio
