@@ -1,5 +1,7 @@
 # 02 - Contrato da fonte
 
+> **Atualização (2026-10-20):** o portal passou a exigir o header `x-client-id` e a limitar a taxa por IP (429 com `Retry-After` real). O `X-BROWSER-VERSION` deste documento não é mais suficiente. Ver [ADR 0001](adr/0001-convivencia-com-o-portal-do-df.md).
+
 ## Objetivo
 Documentar como a fonte de dados de remuneração do Portal da Transparência do DF é acessada, quais parâmetros usa e quais informações principais retorna.
 

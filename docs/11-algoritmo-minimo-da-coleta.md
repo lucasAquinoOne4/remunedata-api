@@ -1,5 +1,7 @@
 # 11 - Algoritmo mínimo da coleta
 
+> **Atualização (2026-10-20):** o algoritmo real difere deste mínimo: meses do mais recente para o mais antigo, uma coleta do DF por vez (trava Redis), tratamento de 429 com bloqueio global, mês vazio é reprocessado e a gravação ignora duplicatas. Ver [ADR 0001](adr/0001-convivencia-com-o-portal-do-df.md) e [ADR 0002](adr/0002-coleta-serial-idempotente-e-retomavel.md).
+
 ## Objetivo
 Definir a regra mínima de funcionamento do coletor com base nas validações realizadas na API.
 

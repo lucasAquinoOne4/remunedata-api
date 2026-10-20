@@ -1,5 +1,7 @@
 # 13 - Modelo mínimo de persistência
 
+> **Atualização (2026-10-20):** a chave lógica candidata abaixo foi descartada. A deduplicação é um índice único `(ano, mês, md5(raw_payload_json))`; há também a tabela `senado_remuneracao` e índices de cobertura e de busca por nome. Ver [ADR 0002](adr/0002-coleta-serial-idempotente-e-retomavel.md), [ADR 0003](adr/0003-senado-fonte-separada-juncao-por-nome.md) e [ADR 0007](adr/0007-busca-por-nome-com-indice-trigram.md).
+
 ## Objetivo
 Definir o conjunto mínimo de estruturas de persistência necessárias para registrar a execução do coletor e armazenar os dados coletados.
 

@@ -1,5 +1,7 @@
 # Estratégia de Ambientes e Variáveis
 
+> **Atualização (2026-10-20):** há três bancos (local, hml e test) e `make test` roda isolado no banco `_test`. Ver [ADR 0004](adr/0004-bancos-por-ambiente-e-isolamento-de-testes.md).
+
 O projeto utiliza três níveis de ambiente para garantir isolamento e segurança.
 
 ## 1. Ambiente Local (`development`)

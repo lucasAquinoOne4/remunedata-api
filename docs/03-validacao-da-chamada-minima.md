@@ -1,3 +1,5 @@
+> **Atualização (2026-10-20):** a chamada mínima validada aqui hoje exige também o header `x-client-id` (sem ele a API responde 400) e respeita bloqueios de taxa. Ver [ADR 0001](adr/0001-convivencia-com-o-portal-do-df.md).
+
 ## Validação da chamada mínima
 ### Teste 1
 ```powershell

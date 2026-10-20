@@ -1,5 +1,7 @@
 # Guia de Configuração no Coolify + Cloudflare
 
+> **Atualização (2026-10-20):** alvo de deploy superado pela EC2 agendada. Ver [ADR 0006](adr/0006-deploy-ec2-free-tier-agendado.md).
+
 Siga este passo a passo para realizar o deploy da API em produção com domínio próprio e segurança.
 
 ## 1. Cloudflare Setup (Antes do Deploy)

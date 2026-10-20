@@ -1,5 +1,7 @@
 # 05 - Validação do limite de size
 
+> **Atualização (2026-10-20):** `size=150` deixou de ser hipótese: é o teto confirmado (o servidor devolve 150 mesmo se pedirem 500) e está fixado em configuração. Ver [ADR 0001](adr/0001-convivencia-com-o-portal-do-df.md).
+
 ## Objetivo
 Validar qual é o limite real do parâmetro `size` na API de remuneração.
 

@@ -1,6 +1,6 @@
 # df-remuneration-collector
 
-Ferramenta de RPA para coleta de dados de remuneração dos servidores públicos do Distrito Federal a partir do Portal da Transparência do DF.
+Ferramenta de RPA para coleta de dados de remuneração dos servidores públicos do Distrito Federal (Portal da Transparência do DF) e do Senado Federal (dados abertos do Senado). A busca aceita `?fonte=DF` ou `?fonte=SENADO`.
 
 ---
 
@@ -98,12 +98,15 @@ docker compose up -d --build
 
 ### Executar todos os testes
 ```bash
-docker compose run --rm app pytest tests/ -v
+make test
 ```
+`make test` roda sempre no banco isolado `df_remuneration_test` (e no Redis 15), porque a suíte faz `TRUNCATE` nas tabelas. Rodar `pytest` direto contra o banco local é bloqueado de propósito pelo `tests/conftest.py`. Ver [ADR 0004](docs/adr/0004-bancos-por-ambiente-e-isolamento-de-testes.md).
 
 ### Verificar Cobertura
 ```bash
-docker compose run --rm app pytest --cov=app tests/
+make migrate-test && set -a && . ./.env.test && set +a && \
+  docker compose run --rm -e DATABASE_URL -e DATABASE_URL_SYNC -e REDIS_URL -e APP_ENV -e SUPABASE_URL \
+  -e SUPABASE_JWT_SECRET -e ADMIN_EMAILS -e PYTHONPATH=. app pytest --cov=app tests/
 ```
 A cobertura atual do projeto e de 86,67%, superando o requisito mínimo de 86%.
 
@@ -127,7 +130,12 @@ A cobertura atual do projeto e de 86,67%, superando o requisito mínimo de 86%.
 
 ## CI/CD e Deploy
 
-O projeto utiliza GitHub Actions para integração contínua (CI) e Coolify para implantação contínua (CD) em VPS.
+O projeto utiliza GitHub Actions para integração contínua (CI). O deploy em uso hoje é uma EC2 t3.micro agendada (ver [ADR 0006](docs/adr/0006-deploy-ec2-free-tier-agendado.md) e `deploy/`); o workflow original ainda aponta para o Coolify.
 - Build automatizado de imagens Docker.
 - Verificação obrigatória de testes e linting antes do deploy.
 - Gerenciamento de containers em produção via Coolify.
+
+
+## Decisões arquiteturais
+
+Ver o índice em [docs/adr/](docs/adr/README.md).

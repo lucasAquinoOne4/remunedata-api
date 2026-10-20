@@ -1,5 +1,7 @@
 # CI/CD Pipeline — GitHub Actions
 
+> **Atualização (2026-10-20):** o deploy em uso hoje é uma EC2 agendada (ver [ADR 0006](adr/0006-deploy-ec2-free-tier-agendado.md)), não o Coolify descrito abaixo. O job de deploy do `cd-main.yml` ainda aponta para o Coolify.
+
 Este projeto utiliza o GitHub Actions para garantir a qualidade do código e automatizar o deploy.
 
 ## Fluxo de Branches

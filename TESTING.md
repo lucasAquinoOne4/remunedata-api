@@ -11,13 +11,13 @@ make status
 ```
 
 ## 2. Rodar Testes Automáticos
-Rode a suite completa de 36 testes integrados:
+Rode a suíte completa (mais de 150 testes). Ela roda no banco isolado `df_remuneration_test` e é bloqueada em qualquer outro banco:
 ```bash
 make test
 ```
 
 ## 3. Disparar uma Coleta (API)
-Acesse o Swagger em `http://localhost:8000/docs` ou use o terminal:
+Acesse o Swagger em `http://localhost:8000/docs` (só existe fora de produção) ou use o terminal:
 
 **Trigger para 2025:**
 ```bash

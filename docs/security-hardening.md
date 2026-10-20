@@ -1,5 +1,7 @@
 # Segurança e Hardening
 
+> **Atualização (2026-10-20):** a API já tem rate limit por código (`RateLimiter` em `/remuneration`) e circuit breaker nos clientes; em produção `/docs`, `/openapi.json` e `/debug-routes` ficam desligados. Ver [ADR 0006](adr/0006-deploy-ec2-free-tier-agendado.md).
+
 Este documento detalha as medidas de segurança implementadas para a operação em produção da API `api-remunedata.com.br`.
 
 ## 1. CORS (Cross-Origin Resource Sharing)

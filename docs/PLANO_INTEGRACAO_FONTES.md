@@ -8,7 +8,7 @@ Base: [estudo Transparência Brasil/República.org, abr/2026](https://backend.tr
 | Fonte | Situação | Tabela |
 |---|---|---|
 | DF | Integrado (API paginada, `x-client-id`) | `remuneration_collected` |
-| Senado Federal | Integrado (1 requisição por mês, junção por nome) | `senado_remuneracao` |
+| Senado Federal | Integrado (2 requisições por mês: folha + cadastro; junção por nome) | `senado_remuneracao` |
 
 ## Fontes candidatas (ordem recomendada)
 
