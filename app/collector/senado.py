@@ -11,6 +11,8 @@ A gravação é idempotente: reexecutar um mês substitui os registros daquele m
 """
 
 import json
+import math
+import re
 import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -22,6 +24,9 @@ from app.persistence.models import SenadoRemuneracao
 from app.persistence.repositories import SenadoRepository
 
 logger = get_logger(__name__)
+
+# Cadastro completo tem ~23 mil registros; abaixo disso a resposta é considerada incompleta
+MIN_CADASTRO = 1000
 
 # Campos que compõem o valor bruto (proventos). Previdência, IR, faltas e reversão do teto
 # constitucional são deduções e ficam de fora.
@@ -39,17 +44,33 @@ PROVENTOS = (
 )
 
 
+_DOT_DECIMAL = re.compile(r"^-?\d+\.\d{1,2}$")
+
+
 def parse_brl(value: Any) -> float:
-    """Converte '5.612,35' (ou número) em float. Valores inválidos viram 0.0."""
+    """
+    Converte '5.612,35' (formato BR da API) ou número em float.
+    Texto inválido, NaN e infinito viram 0.0 (com aviso no log). Um texto com ponto decimal e sem
+    vírgula ('5612.35') é lido como decimal, em vez de virar 561235.
+    """
     if value is None:
         return 0.0
     if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip().replace(".", "").replace(",", ".")
-    try:
-        return float(Decimal(text))
-    except (InvalidOperation, ValueError):
+        number = float(value)
+        return number if math.isfinite(number) else 0.0
+    raw = str(value).strip()
+    if not raw:
         return 0.0
+    text = raw if _DOT_DECIMAL.match(raw) else raw.replace(".", "").replace(",", ".")
+    try:
+        number = float(Decimal(text))
+    except (InvalidOperation, ValueError):
+        logger.warning(f"Valor monetário inválido do Senado ignorado: {raw!r}")
+        return 0.0
+    if not math.isfinite(number):
+        logger.warning(f"Valor monetário não finito do Senado ignorado: {raw!r}")
+        return 0.0
+    return number
 
 
 def normalize_name(name: Any) -> str:
@@ -79,8 +100,17 @@ def _nome(value: Any) -> Optional[str]:
     return str(value).strip() if value else None
 
 
-def build_record(item: Dict[str, Any], cadastro: Optional[Dict[str, Any]]) -> SenadoRemuneracao:
-    """Monta o modelo a partir de um item da folha e do cadastro (se houver)."""
+def build_record(
+    item: Dict[str, Any],
+    cadastro: Optional[Dict[str, Any]],
+    ano: Optional[int] = None,
+    mes: Optional[int] = None,
+) -> SenadoRemuneracao:
+    """
+    Monta o modelo a partir de um item da folha e do cadastro (se houver).
+    `ano`/`mes` são os da competência PEDIDA e prevalecem sobre os do item, para que o mês
+    gravado seja sempre o que replace_month vai substituir.
+    """
     valores = {
         c: parse_brl(item.get(c))
         for c in (
@@ -95,8 +125,8 @@ def build_record(item: Dict[str, Any], cadastro: Optional[Dict[str, Any]]) -> Se
     return SenadoRemuneracao(
         sequencial=int(item["sequencial"]),
         nome=(item.get("nome") or (cadastro or {}).get("nome") or "").strip(),
-        ano=int(item["ano"]),
-        mes=int(item["mes"]),
+        ano=int(ano if ano is not None else item["ano"]),
+        mes=int(mes if mes is not None else item["mes"]),
         tipo_folha=item.get("tipo_folha") or "Normal",
         vinculo=(cadastro or {}).get("vinculo"),
         situacao=(cadastro or {}).get("situacao"),
@@ -126,7 +156,23 @@ class SenadoCollector:
             return {"ano": ano, "mes": mes, "registros": 0, "status": "empty"}
 
         cadastro_list = await self.client.get_servidores()
+        if len(cadastro_list) < MIN_CADASTRO:
+            # Não grava um mês "sem cargo/lotação" por cima de um mês enriquecido por causa de
+            # uma resposta incompleta do cadastro
+            raise RuntimeError(
+                f"Cadastro do Senado incompleto ({len(cadastro_list)} < {MIN_CADASTRO}); "
+                f"mês {mes:02d}/{ano} não foi substituído."
+            )
         cadastro = index_cadastro(cadastro_list)
+
+        # Nome com mais de uma PESSOA (sequencial distinto) na FOLHA do mês também é ambíguo:
+        # não recebe cargo/lotação. A mesma pessoa em duas linhas (folha Normal e Suplementar)
+        # tem o mesmo sequencial e não é homonímia.
+        pessoas_por_nome: Dict[str, set] = {}
+        for item in folha:
+            pessoas_por_nome.setdefault(normalize_name(item.get("nome")), set()).add(
+                item.get("sequencial")
+            )
 
         records: List[SenadoRemuneracao] = []
         seen = set()
@@ -138,7 +184,9 @@ class SenadoCollector:
             if key in seen:  # duplicata dentro do mês violaria a unique constraint
                 continue
             seen.add(key)
-            records.append(build_record(item, cadastro.get(normalize_name(item.get("nome")))))
+            nome_key = normalize_name(item.get("nome"))
+            cadastro_item = cadastro.get(nome_key) if len(pessoas_por_nome[nome_key]) == 1 else None
+            records.append(build_record(item, cadastro_item, ano=ano, mes=mes))
 
         await self.repo.replace_month(ano, mes, records)
         logger.info(f"Senado {mes:02d}/{ano}: {len(records)} registros gravados.")

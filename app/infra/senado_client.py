@@ -31,7 +31,11 @@ class SenadoClient:
             response = await client.get(f"{self.base_url}{path}")
             response.raise_for_status()
             data = response.json()
-            return data if isinstance(data, list) else []
+            if not isinstance(data, list):
+                raise ValueError(
+                    f"Resposta inesperada do Senado em {path}: esperado lista, veio {type(data).__name__}"
+                )
+            return data
 
     @circuit(failure_threshold=5, recovery_timeout=60, expected_exception=httpx.HTTPError)
     async def get_remuneracoes(self, ano: int, mes: int) -> List[Dict[str, Any]]:
