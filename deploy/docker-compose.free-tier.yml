@@ -1,0 +1,71 @@
+# RemuneData em EC2 t3.micro (1 GB de RAM + 2 GB de swap). Tudo com limites de memória.
+# Nginx do host serve o frontend e faz proxy para a API em 127.0.0.1:8000.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    command: >
+      postgres -c shared_buffers=128MB -c effective_cache_size=512MB -c work_mem=4MB
+      -c maintenance_work_mem=128MB -c max_connections=30 -c max_wal_size=1GB
+      -c checkpoint_timeout=15min -c random_page_cost=1.1
+      -c max_parallel_maintenance_workers=0 -c max_parallel_workers_per_gather=0
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    shm_size: 256m
+    stop_grace_period: 90s   # a instância desliga todo dia à 01:00: dá tempo do Postgres fechar limpo
+    mem_limit: 400m
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 48mb --maxmemory-policy allkeys-lru --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 64m
+
+  app:
+    image: remunedata-api:prod
+    restart: unless-stopped
+    env_file: .env
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 250m
+
+  worker:
+    image: remunedata-api:prod
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1
+    stop_grace_period: 30s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 250m
+
+  scheduler:
+    image: remunedata-api:prod
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A app.core.celery_app beat --loglevel=info -s /tmp/celerybeat-schedule
+    depends_on:
+      redis: {condition: service_healthy}
+    mem_limit: 128m
+
+volumes:
+  postgres_data:
