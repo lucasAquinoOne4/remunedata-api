@@ -100,11 +100,18 @@ async def _seed_subscription_plans():
         logger.warning(f"Seed de planos falhou (será tentado no próximo restart): {e}")
 
 
+_IS_PRODUCTION = settings.app_env.lower() in ("production", "prod")
+
 app = FastAPI(
     title="DF Remuneration Collector API",
     description="API para coleta e consulta de remuneração dos servidores do DF",
     version="0.3.0",
     lifespan=lifespan,
+    # Em produção não publica a documentação interativa nem o schema (lista todas as rotas,
+    # inclusive o prefixo do painel admin)
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
 )
 
 # Configurar CORS
@@ -112,8 +119,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
 
@@ -128,7 +135,6 @@ async def health_check():
     }
 
 
-@app.get("/debug-routes")
 async def debug_routes():
     """Lista todas as rotas registradas no app (Apenas para debug)."""
     from starlette.routing import Mount, Route
@@ -140,6 +146,11 @@ async def debug_routes():
         elif isinstance(route, Mount):
             routes.append({"path": route.path, "name": route.name, "methods": ["MOUNT"]})
     return routes
+
+
+# Rota de diagnóstico: só existe fora de produção
+if not _IS_PRODUCTION:
+    app.add_api_route("/debug-routes", debug_routes, methods=["GET"])
 
 
 # Registrar Rotas

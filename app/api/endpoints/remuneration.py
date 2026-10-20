@@ -100,7 +100,7 @@ async def summary_limiter(request=None, response=None):
 
 @router.get("/summary", dependencies=[Depends(summary_limiter)])
 async def get_summary(
-    ano: Optional[int] = Query(None),
+    ano: Optional[int] = Query(None, ge=2000, le=2100),
     repo: RemunerationRepository = Depends(get_remuneration_repository),
     cache: RedisCache = Depends(get_cache),
 ):

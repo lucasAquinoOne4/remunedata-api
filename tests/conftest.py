@@ -21,6 +21,7 @@ os.environ.setdefault("LOG_LEVEL", "WARNING")
 os.environ.setdefault("SUPABASE_URL", "https://mock.supabase.co")
 os.environ.setdefault("SUPABASE_JWT_SECRET", "mock-secret-for-tests-1234567890")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
+os.environ.setdefault("ADMIN_EMAILS", "test@example.com")
 
 # Trava de segurança: a suíte faz TRUNCATE nas tabelas. Nunca rodar contra o banco de dev/produção.
 _db_name = os.environ["DATABASE_URL"].rsplit("/", 1)[-1].split("?")[0]

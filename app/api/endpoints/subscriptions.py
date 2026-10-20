@@ -86,7 +86,9 @@ def _verify_webhook_secret(provided: str) -> bool:
     """Valida o webhookSecret na query string de forma segura (constant-time)."""
     expected = settings.abacatepay_webhook_secret
     if not expected:
-        return True  # dev mode com secret não configurado
+        # Sem segredo configurado: aceita só fora de produção (dev/testes). Em produção é
+        # fail-closed, senão qualquer um poderia chamar o webhook.
+        return settings.app_env.lower() not in ("production", "prod")
     return hmac.compare_digest(str(provided), str(expected))
 
 
@@ -379,7 +381,21 @@ async def webhook(
         await session.commit()
         logger.info(f"Assinatura {sub.id} ativada para user {sub.user_id} até {sub.expires_at}")
 
-    elif event in ("checkout.refunded", "checkout.disputed", "billing.refunded", "billing.failed"):
+    elif event in ("checkout.refunded", "checkout.disputed"):
+        # v2: estorno ou disputa REVOGA o acesso, inclusive de assinatura já ativa
+        sub = await _find_subscription(session, candidates)
+        if sub and sub.status != "canceled":
+            now = datetime.now(timezone.utc)
+            was_active = sub.status == "active"
+            sub.status = "canceled"
+            sub.updated_at = now
+            if was_active:
+                sub.expires_at = now
+            await session.commit()
+            logger.info(f"Assinatura {sub.id} cancelada por evento {event} (ativa={was_active})")
+
+    elif event in ("billing.refunded", "billing.failed"):
+        # eventos legados da v1: mantém o comportamento anterior (não revoga assinatura ativa)
         sub = await _find_subscription(session, candidates)
         if sub and sub.status != "active":
             sub.status = "canceled"
