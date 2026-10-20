@@ -7,6 +7,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.infra.transparencia_client import TransparenciaClient
 from app.persistence.models import ExecutionMonthly, RemunerationCollected
@@ -52,7 +53,7 @@ class MonthlyCollector:
             )
 
         page = monthly_exec.paginas_consumidas
-        batch_size = 5
+        batch_size = settings.transparencia_batch_size
         size = 150
         stop_collection = False
 
@@ -195,6 +196,8 @@ class MonthlyCollector:
 
                 # Incrementar ponteiro de página para o próximo batch
                 page += batch_size
+                if settings.transparencia_request_delay_seconds:
+                    await asyncio.sleep(settings.transparencia_request_delay_seconds)
 
             if monthly_exec.status != "error":
                 monthly_exec.status = "success"

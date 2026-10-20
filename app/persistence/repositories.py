@@ -5,10 +5,15 @@ Implementação do padrão Repository para abstrair o SQLAlchemy.
 
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.persistence.models import ExecutionAnnual, ExecutionMonthly, RemunerationCollected
+from app.persistence.models import (
+    ExecutionAnnual,
+    ExecutionMonthly,
+    RemunerationCollected,
+    SenadoRemuneracao,
+)
 
 
 class ExecutionRepository:
@@ -212,14 +217,38 @@ class RemunerationRepository:
         }
 
     async def save_batch(self, items: list[RemunerationCollected]):
-        """Salva uma lista de registros em lote."""
+        """
+        Salva uma lista de registros em lote, ignorando duplicatas.
+
+        Usa INSERT ... ON CONFLICT DO NOTHING contra o índice único
+        (ano, mês, md5(payload)), então coletas repetidas ou concorrentes não duplicam dados.
+        """
         if not items:
             return
 
-        self.session.add_all(items)
-        # Session commit is deferred to the service layer coordination
-        # or done here if we want immediate persistence per page.
-        # Following our current MonthlyCollector logic, we commit per page.
+        from datetime import datetime, timezone
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        columns = RemunerationCollected.__table__.columns
+        rows = []
+        for obj in items:
+            row = {}
+            for col in columns:
+                if col.name == "id":
+                    continue
+                value = getattr(obj, col.name, None)
+                if value is None and col.default is not None:
+                    arg = col.default.arg
+                    value = arg(None) if callable(arg) else arg
+                if value is None and col.name == "created_at":
+                    value = datetime.now(timezone.utc)
+                row[col.name] = value
+            rows.append(row)
+
+        await self.session.execute(
+            pg_insert(RemunerationCollected).values(rows).on_conflict_do_nothing()
+        )
         await self.session.commit()
 
     async def get_all_by_execution(
@@ -238,7 +267,7 @@ class RemunerationRepository:
         return list(result.scalars().all())
 
     async def get_summary(self, ano: Optional[int] = None) -> dict:
-        """Calcula agregados para o dashboard."""
+        """Calcula agregados para o dashboard (count(*) permite index-only scan, ver ix_remuneration_summary)."""
         from sqlalchemy import func
 
         # Filtro opcional por ano
@@ -248,7 +277,7 @@ class RemunerationRepository:
 
         # 1. Totais Gerais
         stmt_totals = select(
-            func.count(RemunerationCollected.id).label("total_count"),
+            func.count().label("total_count"),
             func.avg(RemunerationCollected.valor_bruto).label("avg_bruto"),
             func.sum(RemunerationCollected.valor_bruto).label("sum_bruto"),
         )
@@ -262,10 +291,10 @@ class RemunerationRepository:
         stmt_orgaos = (
             select(
                 RemunerationCollected.nome_orgao,
-                func.count(RemunerationCollected.id).label("count"),
+                func.count().label("count"),
             )
             .group_by(RemunerationCollected.nome_orgao)
-            .order_by(func.count(RemunerationCollected.id).desc())
+            .order_by(func.count().desc())
             .limit(5)
         )
         if filter_stmt:
@@ -300,3 +329,104 @@ class RemunerationRepository:
         )
         await self.session.execute(stmt)
         await self.session.commit()
+
+
+class SenadoRepository:
+    """Repositório da remuneração de servidores do Senado Federal."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def replace_month(self, ano: int, mes: int, records: list[SenadoRemuneracao]) -> None:
+        """Substitui todos os registros do mês (idempotente) em uma única transação."""
+        await self.session.execute(
+            delete(SenadoRemuneracao).where(
+                SenadoRemuneracao.ano == ano, SenadoRemuneracao.mes == mes
+            )
+        )
+        self.session.add_all(records)
+        await self.session.commit()
+
+    async def search(
+        self,
+        nome: Optional[str] = None,
+        ano: Optional[int] = None,
+        mes: Optional[str] = None,
+        cargo: Optional[str] = None,
+        orgao: Optional[str] = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Busca paginada, devolvendo itens no mesmo formato do RemunerationRead."""
+        filters = []
+        if nome:
+            filters.append(func.unaccent(SenadoRemuneracao.nome).ilike(func.unaccent(f"%{nome}%")))
+        if ano:
+            filters.append(SenadoRemuneracao.ano == ano)
+        if mes:
+            filters.append(SenadoRemuneracao.mes == int(mes))
+        if cargo:
+            filters.append(
+                func.unaccent(SenadoRemuneracao.cargo).ilike(func.unaccent(f"%{cargo}%"))
+            )
+        if orgao:
+            filters.append(
+                func.unaccent(SenadoRemuneracao.lotacao_nome).ilike(func.unaccent(f"%{orgao}%"))
+            )
+
+        total = (
+            await self.session.execute(
+                select(func.count()).select_from(SenadoRemuneracao).where(*filters)
+            )
+        ).scalar_one()
+
+        stmt = (
+            select(SenadoRemuneracao)
+            .where(*filters)
+            .order_by(
+                SenadoRemuneracao.nome, SenadoRemuneracao.ano.desc(), SenadoRemuneracao.mes.desc()
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [self.to_read(r) for r in rows], total
+
+    async def get_distinct_filters(self) -> dict[str, list[str]]:
+        """Cargos e lotações únicos, para os selects do frontend."""
+        res_cargos = await self.session.execute(
+            select(SenadoRemuneracao.cargo)
+            .where(SenadoRemuneracao.cargo.isnot(None))
+            .distinct()
+            .order_by(SenadoRemuneracao.cargo)
+        )
+        res_lot = await self.session.execute(
+            select(SenadoRemuneracao.lotacao_nome)
+            .where(SenadoRemuneracao.lotacao_nome.isnot(None))
+            .distinct()
+            .order_by(SenadoRemuneracao.lotacao_nome)
+        )
+        return {
+            "cargos": [str(c) for c in res_cargos.scalars().all() if c],
+            "orgaos": [str(o) for o in res_lot.scalars().all() if o],
+        }
+
+    @staticmethod
+    def to_read(r: SenadoRemuneracao) -> dict:
+        """Mapeia para o formato comum de RemunerationRead."""
+        return {
+            "id": r.id,
+            "fonte": "SENADO",
+            "ano_exercicio": r.ano,
+            "mes_referencia": f"{r.mes:02d}",
+            "codigo_identificacao": str(r.sequencial),
+            "codigo_matricula": str(r.sequencial),
+            "nome_servidor": r.nome,
+            "cpf_servidor": None,
+            "codigo_orgao": r.lotacao_sigla,
+            "nome_orgao": r.lotacao_nome,
+            "cargo": r.cargo,
+            "valor_bruto": r.valor_bruto,
+            "valor_liquido": r.valor_liquido,
+            "created_at": r.created_at,
+        }

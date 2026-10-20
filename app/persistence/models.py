@@ -7,7 +7,17 @@ Baseado em /docs/13-modelo-minimo-de-persistencia.md.
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -243,6 +253,59 @@ class SupportMessage(Base):
     is_from_admin: Mapped[bool] = mapped_column(default=False)
     is_read: Mapped[bool] = mapped_column(default=False)
 
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class SenadoRemuneracao(Base):
+    """
+    Remuneração mensal de servidores do Senado Federal, unindo a folha do mês
+    (/servidores/remuneracoes/{ano}/{mes}) ao cadastro (/servidores/servidores).
+    """
+
+    __tablename__ = "senado_remuneracao"
+    __table_args__ = (
+        UniqueConstraint("sequencial", "ano", "mes", "tipo_folha", name="uq_senado_rem_periodo"),
+        Index("ix_senado_rem_ano_mes", "ano", "mes"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    # Identificação
+    sequencial: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    ano: Mapped[int] = mapped_column(Integer, nullable=False)
+    mes: Mapped[int] = mapped_column(Integer, nullable=False)
+    tipo_folha: Mapped[str] = mapped_column(String(50), nullable=False, default="Normal")
+
+    # Cadastro (pode ficar vazio se o servidor não constar no cadastro)
+    vinculo: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    situacao: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    cargo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    funcao: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    lotacao_sigla: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    lotacao_nome: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Valores (R$)
+    remuneracao_basica: Mapped[float] = mapped_column(Float, default=0.0)
+    vantagens_pessoais: Mapped[float] = mapped_column(Float, default=0.0)
+    funcao_comissionada: Mapped[float] = mapped_column(Float, default=0.0)
+    gratificacao_natalina: Mapped[float] = mapped_column(Float, default=0.0)
+    horas_extras: Mapped[float] = mapped_column(Float, default=0.0)
+    outras_eventuais: Mapped[float] = mapped_column(Float, default=0.0)
+    abono_permanencia: Mapped[float] = mapped_column(Float, default=0.0)
+    vantagens_indenizatorias: Mapped[float] = mapped_column(Float, default=0.0)
+    diarias: Mapped[float] = mapped_column(Float, default=0.0)
+    auxilios: Mapped[float] = mapped_column(Float, default=0.0)
+    previdencia: Mapped[float] = mapped_column(Float, default=0.0)
+    imposto_renda: Mapped[float] = mapped_column(Float, default=0.0)
+    faltas: Mapped[float] = mapped_column(Float, default=0.0)
+    reversao_teto_constitucional: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_bruto: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_liquido: Mapped[float] = mapped_column(Float, default=0.0)
+
+    raw_payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

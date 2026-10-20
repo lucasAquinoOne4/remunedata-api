@@ -15,7 +15,11 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.persistence.admin_repository import AdminRepository
 from app.persistence.models import UserSubscription
-from app.persistence.repositories import ExecutionRepository, RemunerationRepository
+from app.persistence.repositories import (
+    ExecutionRepository,
+    RemunerationRepository,
+    SenadoRepository,
+)
 from app.persistence.session import get_session
 
 logger = get_logger(__name__)
@@ -26,6 +30,13 @@ security = HTTPBearer()
 def get_execution_repository(session: AsyncSession = Depends(get_session)) -> ExecutionRepository:
     """Dependency for ExecutionRepository."""
     return ExecutionRepository(session)
+
+
+def get_senado_repository(
+    session: AsyncSession = Depends(get_session),
+) -> SenadoRepository:
+    """Dependency for SenadoRepository."""
+    return SenadoRepository(session)
 
 
 def get_remuneration_repository(

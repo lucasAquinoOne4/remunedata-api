@@ -9,10 +9,18 @@ from celery.utils.log import get_task_logger
 
 from app.collector.annual import AnnualCollector
 from app.collector.monthly import MonthlyCollector
+from app.collector.senado import SenadoCollector
+from app.core import locks
 from app.core.cache import cache
 from app.core.celery_app import celery_app
+from app.core.config import get_settings
+from app.infra.senado_client import SenadoClient
 from app.infra.transparencia_client import TransparenciaClient
-from app.persistence.repositories import ExecutionRepository, RemunerationRepository
+from app.persistence.repositories import (
+    ExecutionRepository,
+    RemunerationRepository,
+    SenadoRepository,
+)
 from app.persistence.session import async_engine, async_session_maker
 
 logger = get_task_logger(__name__)
@@ -24,6 +32,15 @@ def collect_annual_task(self, ano: int):
     Tarefa Celery para executar a coleta anual completa.
     Wrapper síncrono para a execução assíncrona dos coletores.
     """
+    owner = str(self.request.id)
+    if not locks.acquire(locks.DF_COLLECT_LOCK, owner):
+        # Só uma coleta do DF por vez (o portal limita a taxa por IP). Tenta de novo em 5 min.
+        logger.info(
+            f"Coleta do DF já em andamento ({locks.current_owner(locks.DF_COLLECT_LOCK)}). "
+            f"Ano {ano} reagendado."
+        )
+        raise self.retry(countdown=300, max_retries=288)
+
     logger.info(f"Iniciando tarefa de coleta anual: {ano} (Task ID: {self.request.id})")
 
     async def _run():
@@ -72,6 +89,8 @@ def collect_annual_task(self, ano: int):
         else:
             logger.error(f"Erro fatal na tarefa de coleta {ano}: {str(e)}")
         raise e
+    finally:
+        locks.release(locks.DF_COLLECT_LOCK, owner)
 
 
 @celery_app.task(name="sync_recent_years_task")
@@ -84,11 +103,17 @@ def sync_recent_years_task():
     current_year = datetime.now().year
     previous_year = current_year - 1
 
+    # Se já há coleta do DF em andamento, não empilha outra (evita tarefas duplicadas na fila)
+    running = locks.current_owner(locks.DF_COLLECT_LOCK)
+    if running:
+        logger.info(f"Sincronização do DF ignorada: coleta {running} já em andamento.")
+        return {"status": "skipped", "running": running}
+
     logger.info(f"Iniciando sincronização periódica: {previous_year} e {current_year}")
 
-    # Dispara as tarefas de coleta anual para ambos os anos
-    collect_annual_task.delay(previous_year)
+    # Ano atual primeiro (dados mais procurados); a trava global serializa a execução
     collect_annual_task.delay(current_year)
+    collect_annual_task.delay(previous_year)
 
     return {"status": "queued", "years": [previous_year, current_year]}
 
@@ -133,3 +158,49 @@ def retry_monthly_task(self, execution_id: int, mes: str):
     finally:
         loop.run_until_complete(async_engine.dispose())
         loop.close()
+
+
+def _recent_months(n: int) -> list[tuple[int, int]]:
+    """Os n meses mais recentes (inclui o atual), do mais novo ao mais antigo."""
+    from datetime import datetime
+
+    now = datetime.now()
+    year, month = now.year, now.month
+    result = []
+    for _ in range(n):
+        result.append((year, month))
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    return result
+
+
+@celery_app.task(name="collect_senado_month_task", bind=True)
+def collect_senado_month_task(self, ano: int, mes: int):
+    """Coleta a folha de um mês do Senado Federal (idempotente)."""
+    logger.info(f"Iniciando coleta do Senado {mes:02d}/{ano} (Task ID: {self.request.id})")
+
+    async def _run():
+        async with async_session_maker() as session:
+            collector = SenadoCollector(SenadoClient(), SenadoRepository(session))
+            result = await collector.collect_month(ano, mes)
+            if result["registros"]:
+                await cache.clear_prefix("remuneration:")
+            return result
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()
+
+
+@celery_app.task(name="sync_senado_task")
+def sync_senado_task():
+    """Sincronização periódica: revisita os últimos meses do Senado."""
+    months = _recent_months(get_settings().senado_sync_months)
+    for ano, mes in months:
+        collect_senado_month_task.delay(ano, mes)
+    return {"status": "queued", "months": [f"{a}-{m:02d}" for a, m in months]}

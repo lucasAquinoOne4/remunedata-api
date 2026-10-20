@@ -29,7 +29,7 @@ async def test_search_filters_cargo_orgao(
         valor_bruto=10000.0,
         codigo_identificacao="ID1",
         codigo_matricula="M1",
-        raw_payload_json="{}",
+        raw_payload_json='{"fixture": 1}',
     )
     r2 = RemunerationCollected(
         execution_id=execution.id,
@@ -42,7 +42,7 @@ async def test_search_filters_cargo_orgao(
         valor_bruto=5000.0,
         codigo_identificacao="ID2",
         codigo_matricula="M2",
-        raw_payload_json="{}",
+        raw_payload_json='{"fixture": 2}',
     )
     db_session.add_all([r1, r2])
     await db_session.commit()
@@ -84,7 +84,7 @@ async def test_summary_endpoint(
         mes_referencia="01",
         codigo_identificacao="ID3",
         codigo_matricula="M3",
-        raw_payload_json="{}",
+        raw_payload_json='{"fixture": 3}',
     )
     db_session.add(r1)
     await db_session.commit()
@@ -119,7 +119,7 @@ async def test_export_limits_enforced(
         mes_referencia="01",
         codigo_identificacao="IDE1",
         codigo_matricula="ME1",
-        raw_payload_json="{}",
+        raw_payload_json='{"fixture": 4}',
     )
     r2 = RemunerationCollected(
         execution_id=execution.id,
@@ -130,7 +130,7 @@ async def test_export_limits_enforced(
         mes_referencia="01",
         codigo_identificacao="IDE2",
         codigo_matricula="ME2",
-        raw_payload_json="{}",
+        raw_payload_json='{"fixture": 5}',
     )
     db_session.add_all([r1, r2])
     await db_session.commit()

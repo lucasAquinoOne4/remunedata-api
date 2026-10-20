@@ -7,6 +7,7 @@ import collections
 from datetime import datetime, timezone
 
 from app.collector.monthly import MonthlyCollector
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.persistence.models import ExecutionAnnual
 from app.persistence.repositories import ExecutionRepository
@@ -56,6 +57,8 @@ class AnnualCollector:
         await self.execution_repo.session.commit()
 
         meses = [f"{m:02d}" for m in range(1, 13)]
+        if settings.transparencia_recent_months_first:
+            meses.reverse()
         stats = collections.Counter()
 
         # 2. Iterar meses

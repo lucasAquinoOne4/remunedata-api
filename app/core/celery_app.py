@@ -30,6 +30,21 @@ celery_app.conf.update(
 celery_app.conf.beat_schedule = {
     "sync-recent-years-daily": {
         "task": "sync_recent_years_task",
-        "schedule": crontab(hour=3, minute=0),  # Diário às 03:00 AM
+        "schedule": crontab(hour=6, minute=0),  # Diário às 06:00 (instância liga às 05:30)
+    },
+    "sync-senado-daily": {
+        "task": "sync_senado_task",
+        "schedule": crontab(hour=7, minute=0),  # Diário às 07:00 (instância liga às 05:30)
     },
 }
+
+
+from celery.signals import worker_ready  # noqa: E402
+
+
+@worker_ready.connect
+def _clear_stale_locks(**_kwargs):
+    """Se o worker caiu no meio de uma coleta, a trava ficaria órfã até o TTL: limpa ao subir."""
+    from app.core import locks
+
+    locks.clear(locks.DF_COLLECT_LOCK)

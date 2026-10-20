@@ -47,6 +47,7 @@ class ExecutionAnnualDetail(ExecutionAnnualRead):
 
 class RemunerationRead(BaseModel):
     id: int
+    fonte: str = "DF"
     ano_exercicio: int
     mes_referencia: str
     codigo_identificacao: str

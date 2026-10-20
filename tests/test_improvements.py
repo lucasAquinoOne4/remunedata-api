@@ -29,7 +29,7 @@ async def test_search_accentuation(db_session):
         nome_servidor="JOÃO DA SILVA",
         cargo="SECRETÁRIO",
         nome_orgao="ÓRGÃO DE TESTE",
-        raw_payload_json="{}",
+        raw_payload_json='{"fixture": 1}',
     )
     db_session.add(item)
     await db_session.commit()
@@ -72,7 +72,7 @@ async def test_get_distinct_filters(db_session):
             nome_servidor=f"S_{i}",
             cargo="CARGO_A" if i % 2 == 0 else "CARGO_B",
             nome_orgao="ORGAO_X" if i < 3 else "ORGAO_Y",
-            raw_payload_json="{}",
+            raw_payload_json=f'{{"i": {i}}}',
         )
         for i in range(5)
     ]

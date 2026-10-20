@@ -80,6 +80,42 @@ class Settings(BaseSettings):
         ge=1,
         le=150,
     )
+    transparencia_client_id: str = Field(
+        default="remunedata",
+        description="Valor do header x-client-id exigido pela API do Portal da Transparência",
+    )
+    senado_api_base_url: str = Field(
+        default="https://adm.senado.gov.br/adm-dadosabertos/api/v1",
+        description="URL base da API de dados abertos administrativos do Senado Federal",
+    )
+    senado_timeout_seconds: int = Field(
+        default=120,
+        description="Timeout em segundos para a API do Senado (cada mês vem numa só resposta grande)",
+        ge=5,
+        le=600,
+    )
+    senado_sync_months: int = Field(
+        default=3,
+        description="Quantos meses recentes a sincronização diária do Senado revisita",
+        ge=1,
+        le=24,
+    )
+    transparencia_recent_months_first: bool = Field(
+        default=True,
+        description="Coleta os meses do mais recente para o mais antigo (dados novos aparecem antes)",
+    )
+    transparencia_batch_size: int = Field(
+        default=5,
+        description="Páginas buscadas em paralelo por lote (reduzir se a API responder 429)",
+        ge=1,
+        le=10,
+    )
+    transparencia_request_delay_seconds: float = Field(
+        default=0.0,
+        description="Pausa entre lotes de páginas, para evitar 429 da API",
+        ge=0,
+        le=30,
+    )
     transparencia_timeout_seconds: int = Field(
         default=30,
         description="Timeout em segundos para requisições HTTP à API",
@@ -102,9 +138,23 @@ class Settings(BaseSettings):
         default="",
         description="Secret para validação dos webhooks da AbacatePay",
     )
+    abacatepay_methods: str = Field(
+        default="PIX,CARD",
+        description=(
+            "Meios de pagamento do checkout, separados por vírgula (PIX, CARD, BOLETO). "
+            "Meios não habilitados na loja são descartados automaticamente."
+        ),
+    )
+    abacatepay_public_key: str = Field(
+        default="",
+        description=(
+            "Chave pública de assinatura de webhooks (publicada na documentação da AbacatePay). "
+            "Se definida, a assinatura X-Webhook-Signature (HMAC-SHA256, base64) é validada."
+        ),
+    )
     abacatepay_base_url: str = Field(
-        default="https://api.abacatepay.com/v1",
-        description="URL base da API AbacatePay",
+        default="https://api.abacatepay.com/v2",
+        description="URL base da API AbacatePay (v2)",
     )
     front_url: str = Field(
         default="https://remunedata.com.br",

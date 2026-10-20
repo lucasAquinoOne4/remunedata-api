@@ -58,7 +58,7 @@ async def test_remuneration_repo_save_batch(db_session):
             codigo_identificacao=f"TEST_{i}",
             codigo_matricula="123",
             nome_servidor="JOAO",
-            raw_payload_json="{}",
+            raw_payload_json=f'{{"i": {i}}}',
         )
         for i in range(5)
     ]
