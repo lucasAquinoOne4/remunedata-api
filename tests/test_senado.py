@@ -86,7 +86,9 @@ async def test_collector_remove_duplicatas_e_une_cadastro():
         _item(sequencial=1, tipo_folha="Suplementar"),
         _item(sequencial=2, nome="OUTRA PESSOA"),
     ]
-    client.get_servidores.return_value = [
+    # cadastro precisa ser "completo" (>= MIN_CADASTRO): completa com registros de enchimento
+    enchimento = [{"sequencial": 5000 + i, "nome": f"ENCHIMENTO {i}"} for i in range(1000)]
+    client.get_servidores.return_value = enchimento + [
         {"sequencial": 999, "nome": "aline de aquino teste ", "cargo": "TECNICO"},
         {"sequencial": 998, "nome": "OUTRA PESSOA", "cargo": "A"},
         {"sequencial": 997, "nome": "OUTRA PESSOA", "cargo": "B"},  # homônimo: não junta

@@ -4,6 +4,7 @@ Proteções da coleta: sem duplicatas no banco e uma coleta do DF por vez.
 """
 
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -88,3 +89,64 @@ def test_sync_do_df_nao_empilha_quando_ja_ha_coleta(monkeypatch):
     result = tasks.sync_recent_years_task()
     assert result["status"] == "queued"
     assert len(enfileiradas) == 2
+
+
+@pytest.mark.asyncio
+async def test_mark_interrupted_fecha_execucoes_orfas(db_session):
+
+    exec_repo = ExecutionRepository(db_session)
+    annual = await exec_repo.get_or_create_annual(2096)
+    annual.status = "running"
+    annual.total_meses_processados = 2
+    monthly = await exec_repo.create_monthly(annual.id, "05")
+    assert monthly.status == "running"
+    await db_session.commit()
+
+    count = await exec_repo.mark_interrupted()
+    assert count >= 2
+
+    await db_session.refresh(annual)
+    await db_session.refresh(monthly)
+    assert monthly.status == "error" and "Interrompida" in monthly.error_message
+    assert monthly.finished_at is not None
+    assert annual.status == "partial_success"  # já tinha mês concluído
+
+    # sem nenhum mês concluído vira 'error'
+    vazio = await exec_repo.get_or_create_annual(2095)
+    vazio.status = "running"
+    vazio.total_meses_processados = 0
+    await db_session.commit()
+    await exec_repo.mark_interrupted()
+    await db_session.refresh(vazio)
+    assert vazio.status == "error"
+
+
+def test_producao_nao_expoe_docs_nem_debug_routes():
+    """Em produção /docs, /redoc, /openapi.json e /debug-routes não existem."""
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "from app.main import app;"
+        "paths={r.path for r in app.routes};"
+        "print(sorted(p for p in paths if p in ('/docs','/redoc','/openapi.json','/debug-routes')))"
+    )
+    env = {**os.environ, "APP_ENV": "production"}
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert out.stdout.strip().endswith("[]"), out.stdout + out.stderr
+    env["APP_ENV"] = "development"
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert "/docs" in out.stdout
