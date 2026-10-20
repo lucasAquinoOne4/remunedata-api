@@ -68,18 +68,26 @@ class AnnualCollector:
                 existing_monthly = await self.execution_repo.get_monthly_execution_by_mes(
                     annual_exec.id, mes
                 )
-                if existing_monthly and existing_monthly.status == "success":
+                # Mês concluído COM dados é pulado. Mês "success" com 0 registros significa que o
+                # portal ainda não tinha publicado a competência: tenta de novo (1 requisição).
+                if (
+                    existing_monthly
+                    and existing_monthly.status == "success"
+                    and (existing_monthly.registros_coletados or 0) > 0
+                ):
                     logger.info(f"Mês {mes}/{ano} já concluído com sucesso. Pulando...")
                     stats["success"] += 1
                     continue
 
                 logger.info(f"Orquestrando mês {mes}/{ano}")
+                # Mês "success" vazio já entrou na soma inicial de meses processados
+                ja_contado = bool(existing_monthly and existing_monthly.status == "success")
                 result = await self.monthly_collector.collect(
                     ano=ano, mes=mes, annual_execution_id=annual_exec.id
                 )
                 stats[result.status] += 1
 
-                if result.status == "success":
+                if result.status == "success" and not ja_contado:
                     annual_exec.total_meses_processados += 1
                     await self.execution_repo.session.commit()
 

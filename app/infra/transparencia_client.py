@@ -21,6 +21,12 @@ _MAX_429_RETRIES = 3
 _MAX_BAN_WAIT_SECONDS = 1800.0
 
 
+class PortalRateLimited(Exception):
+    """429 persistente do portal. Fica FORA de httpx.HTTPStatusError de propósito: o circuit
+    breaker só conta falhas reais e não deve abrir por bloqueio de taxa (que já é tratado pelo
+    bloqueio global no Redis, respeitado antes de cada requisição)."""
+
+
 class TransparenciaClient:
     """
     Cliente de integração com a API de remuneração do DF.
@@ -109,6 +115,11 @@ class TransparenciaClient:
                 logger.warning(
                     "429 da API Transparência, bloqueio registrado",
                     extra=log_extra(mes=mes, page=page, wait=wait),
+                )
+
+            if response.status_code == 429:
+                raise PortalRateLimited(
+                    f"Portal respondeu 429 após {_MAX_429_RETRIES} retentativas (mês {mes}, pág {page})."
                 )
 
             # Lança exceção para status 4xx/5xx

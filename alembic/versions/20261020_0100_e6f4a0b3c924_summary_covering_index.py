@@ -20,10 +20,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_remuneration_summary "
-        "ON remuneration_collected (ano_exercicio, nome_orgao) INCLUDE (valor_bruto)"
-    )
+    # CONCURRENTLY: não bloqueia a coleta que está gravando (roda fora de transação)
+    with op.get_context().autocommit_block():
+        op.execute(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_remuneration_summary "
+            "ON remuneration_collected (ano_exercicio, nome_orgao) INCLUDE (valor_bruto)"
+        )
 
 
 def downgrade() -> None:

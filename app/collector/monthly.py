@@ -54,7 +54,7 @@ class MonthlyCollector:
 
         page = monthly_exec.paginas_consumidas
         batch_size = settings.transparencia_batch_size
-        size = 150
+        size = settings.transparencia_page_size
         stop_collection = False
 
         try:

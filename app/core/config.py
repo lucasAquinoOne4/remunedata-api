@@ -105,13 +105,13 @@ class Settings(BaseSettings):
         description="Coleta os meses do mais recente para o mais antigo (dados novos aparecem antes)",
     )
     transparencia_batch_size: int = Field(
-        default=5,
+        default=1,
         description="Páginas buscadas em paralelo por lote (reduzir se a API responder 429)",
         ge=1,
         le=10,
     )
     transparencia_request_delay_seconds: float = Field(
-        default=0.0,
+        default=2.0,
         description="Pausa entre lotes de páginas, para evitar 429 da API",
         ge=0,
         le=30,
@@ -171,7 +171,7 @@ class Settings(BaseSettings):
         description="Prefixo da URL para o painel administrativo",
     )
     admin_emails: Union[str, list[str]] = Field(
-        default=["admin@remunedata.com.br"],
+        default=[],
         description="Lista de e-mails com permissão de administrador",
     )
 

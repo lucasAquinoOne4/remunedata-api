@@ -20,10 +20,26 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # A razão desta migration é a existência de duplicatas: remove as cópias exatas (mesmo
+    # ano, mês e payload), mantendo a mais antiga, senão o índice único não pode ser criado.
     op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_remuneration_periodo_payload "
-        "ON remuneration_collected (ano_exercicio, mes_referencia, md5(raw_payload_json))"
+        """
+        DELETE FROM remuneration_collected r
+        USING (
+            SELECT id, row_number() OVER (
+                PARTITION BY ano_exercicio, mes_referencia, md5(raw_payload_json) ORDER BY id
+            ) AS rn
+            FROM remuneration_collected
+        ) d
+        WHERE r.id = d.id AND d.rn > 1
+        """
     )
+    # CONCURRENTLY não bloqueia escritas (precisa rodar fora de transação)
+    with op.get_context().autocommit_block():
+        op.execute(
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_remuneration_periodo_payload "
+            "ON remuneration_collected (ano_exercicio, mes_referencia, md5(raw_payload_json))"
+        )
 
 
 def downgrade() -> None:

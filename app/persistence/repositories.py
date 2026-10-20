@@ -5,7 +5,7 @@ Implementação do padrão Repository para abstrair o SQLAlchemy.
 
 from typing import Optional
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.models import (
@@ -14,6 +14,26 @@ from app.persistence.models import (
     RemunerationCollected,
     SenadoRemuneracao,
 )
+
+
+def _like_pattern(term: str) -> str:
+    """Padrão ILIKE '%termo%' sem acentos e com %, _ e \\ do usuário escapados (busca literal)."""
+    plain = _strip_accents(term)
+    for ch in ("\\", "%", "_"):
+        plain = plain.replace(ch, "\\" + ch)
+    return f"%{plain}%"
+
+
+def _strip_accents(text: str) -> str:
+    """Remove acentos do termo buscado (o índice é sobre o nome sem acento)."""
+    import unicodedata
+
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
+_INSERT_CHUNK_ROWS = 500  # 500 x 36 colunas = 18 mil parâmetros (< 32767)
 
 
 class ExecutionRepository:
@@ -129,6 +149,39 @@ class ExecutionRepository:
 
             await self.session.commit()
 
+    async def mark_interrupted(self) -> int:
+        """
+        Marca como interrompidas as execuções que ficaram 'running' (worker parado no meio,
+        por exemplo no desligamento diário da instância). Mês -> 'error' (a coleta retoma de
+        paginas_consumidas); ano -> 'partial_success' se já concluiu algum mês, senão 'error'.
+        Retorna quantas execuções foram atualizadas.
+        """
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        monthly = await self.session.execute(
+            update(ExecutionMonthly)
+            .where(ExecutionMonthly.status == "running")
+            .values(
+                status="error",
+                error_message="Interrompida (reinício do worker); será retomada",
+                finished_at=now,
+            )
+        )
+        annual = await self.session.execute(
+            update(ExecutionAnnual)
+            .where(ExecutionAnnual.status == "running")
+            .values(
+                status=case(
+                    (ExecutionAnnual.total_meses_processados > 0, "partial_success"),
+                    else_="error",
+                ),
+                finished_at=now,
+            )
+        )
+        await self.session.commit()
+        return (monthly.rowcount or 0) + (annual.rowcount or 0)
+
 
 class RemunerationRepository:
     """Repositório para gerenciar os dados de remuneração coletados."""
@@ -154,12 +207,12 @@ class RemunerationRepository:
         count_stmt = select(func.count()).select_from(RemunerationCollected)
 
         if nome:
-            stmt = stmt.where(
-                func.unaccent(RemunerationCollected.nome_servidor).ilike(func.unaccent(f"%{nome}%"))
+            # índice trigram sobre immutable_unaccent(nome_servidor) (migration f7a1c3d9e5b2)
+            cond = func.immutable_unaccent(RemunerationCollected.nome_servidor).ilike(
+                _like_pattern(nome), escape="\\"
             )
-            count_stmt = count_stmt.where(
-                func.unaccent(RemunerationCollected.nome_servidor).ilike(func.unaccent(f"%{nome}%"))
-            )
+            stmt = stmt.where(cond)
+            count_stmt = count_stmt.where(cond)
         if cpf:
             stmt = stmt.where(RemunerationCollected.cpf_servidor == cpf)
             count_stmt = count_stmt.where(RemunerationCollected.cpf_servidor == cpf)
@@ -246,9 +299,12 @@ class RemunerationRepository:
                 row[col.name] = value
             rows.append(row)
 
-        await self.session.execute(
-            pg_insert(RemunerationCollected).values(rows).on_conflict_do_nothing()
-        )
+        # asyncpg aceita no máx. 32767 parâmetros por comando (36 colunas x linhas): fatia o INSERT
+        for start in range(0, len(rows), _INSERT_CHUNK_ROWS):
+            chunk = rows[start : start + _INSERT_CHUNK_ROWS]
+            await self.session.execute(
+                pg_insert(RemunerationCollected).values(chunk).on_conflict_do_nothing()
+            )
         await self.session.commit()
 
     async def get_all_by_execution(
@@ -360,7 +416,11 @@ class SenadoRepository:
         """Busca paginada, devolvendo itens no mesmo formato do RemunerationRead."""
         filters = []
         if nome:
-            filters.append(func.unaccent(SenadoRemuneracao.nome).ilike(func.unaccent(f"%{nome}%")))
+            filters.append(
+                func.immutable_unaccent(SenadoRemuneracao.nome).ilike(
+                    _like_pattern(nome), escape="\\"
+                )
+            )
         if ano:
             filters.append(SenadoRemuneracao.ano == ano)
         if mes:

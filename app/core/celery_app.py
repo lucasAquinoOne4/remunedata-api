@@ -45,6 +45,26 @@ from celery.signals import worker_ready  # noqa: E402
 @worker_ready.connect
 def _clear_stale_locks(**_kwargs):
     """Se o worker caiu no meio de uma coleta, a trava ficaria órfã até o TTL: limpa ao subir."""
+    import asyncio
+
     from app.core import locks
+    from app.core.logging import get_logger
 
     locks.clear(locks.DF_COLLECT_LOCK)
+
+    # Execuções que ficaram 'running' porque o worker parou no meio (ex.: desligamento às 01:00)
+    async def _mark_interrupted() -> int:
+        from app.persistence.repositories import ExecutionRepository
+        from app.persistence.session import async_engine, async_session_maker
+
+        try:
+            async with async_session_maker() as session:
+                return await ExecutionRepository(session).mark_interrupted()
+        finally:
+            await async_engine.dispose()
+
+    try:
+        count = asyncio.run(_mark_interrupted())
+        get_logger(__name__).info(f"Execuções interrompidas marcadas na subida do worker: {count}")
+    except Exception as e:  # nunca impede o worker de subir
+        get_logger(__name__).warning(f"Não foi possível marcar execuções interrompidas: {e}")
