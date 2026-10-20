@@ -22,6 +22,14 @@ os.environ.setdefault("SUPABASE_URL", "https://mock.supabase.co")
 os.environ.setdefault("SUPABASE_JWT_SECRET", "mock-secret-for-tests-1234567890")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 
+# Trava de segurança: a suíte faz TRUNCATE nas tabelas. Nunca rodar contra o banco de dev/produção.
+_db_name = os.environ["DATABASE_URL"].rsplit("/", 1)[-1].split("?")[0]
+if not _db_name.endswith("_test"):
+    raise SystemExit(
+        f"ABORTADO: DATABASE_URL aponta para '{_db_name}', que não termina em '_test'. "
+        "Os testes apagam dados. Rode com DATABASE_URL e DATABASE_URL_SYNC de um banco de teste."
+    )
+
 
 @pytest.fixture(scope="session", autouse=True)
 def settle_limiter_singleton():
