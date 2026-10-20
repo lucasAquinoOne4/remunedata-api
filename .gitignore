@@ -48,7 +48,8 @@ desktop.ini
 *.csv
 *.xlsx
 secrets_ready_to_use.md
-erro.txtbackups/
+erro.txt
+backups/
 
 # Específico da máquina de cada dev
 docker-compose.override.yml
