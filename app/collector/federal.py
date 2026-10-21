@@ -229,6 +229,9 @@ class FederalCollector:
             total = await self.repo.replace_month(
                 ano, mes, iter_records(zip_path, ano, mes, work), chunk=CHUNK
             )
-        await invalidate_period_stat(self.repo.session, "FEDERAL", ano, mes)
+        try:
+            await invalidate_period_stat(self.repo.session, "FEDERAL", ano, mes)
+        except Exception as exc:  # agregados e retrato são cache: nunca derrubam a carga
+            logger.warning(f"Não foi possível atualizar agregados de {mes:02d}/{ano}: {exc}")
         logger.info(f"Federal {mes:02d}/{ano}: {total} registros gravados.")
         return {"ano": ano, "mes": mes, "registros": total, "status": "success"}

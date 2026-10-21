@@ -12,6 +12,7 @@ from app.persistence.models import (
     ExecutionAnnual,
     ExecutionMonthly,
     FederalRemuneracao,
+    PersonLatest,
     RemunerationCollected,
     SenadoRemuneracao,
 )
@@ -652,6 +653,68 @@ class FederalRepository:
             "cpf_servidor": r.cpf_mascarado,
             "codigo_orgao": None,
             "nome_orgao": r.org_exercicio or r.org_lotacao,
+            "cargo": r.cargo,
+            "valor_bruto": r.valor_bruto,
+            "valor_liquido": r.valor_liquido,
+            "created_at": None,
+        }
+
+
+class PersonLatestRepository:
+    """Busca por nome no retrato mais recente de cada pessoa (uma linha por pessoa e fonte)."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def search(
+        self,
+        fonte: str,
+        nome: Optional[str] = None,
+        cargo: Optional[str] = None,
+        orgao: Optional[str] = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        filters = [PersonLatest.fonte == fonte]
+        if nome:
+            filters.append(
+                func.immutable_unaccent(PersonLatest.nome).ilike(_like_pattern(nome), escape="\\")
+            )
+        if cargo:
+            filters.append(PersonLatest.cargo == cargo)
+        if orgao:
+            filters.append(PersonLatest.orgao == orgao)
+
+        capped = select(PersonLatest.id).where(*filters).limit(COUNT_CAP + 1).subquery()
+        total = (await self.session.execute(select(func.count()).select_from(capped))).scalar_one()
+        rows = (
+            (
+                await self.session.execute(
+                    select(PersonLatest)
+                    .where(*filters)
+                    .order_by(PersonLatest.nome, PersonLatest.ident)
+                    .limit(limit)
+                    .offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [self.to_read(r) for r in rows], total
+
+    @staticmethod
+    def to_read(r: PersonLatest) -> dict:
+        return {
+            "id": r.id,
+            "fonte": r.fonte,
+            "ano_exercicio": r.ano,
+            "mes_referencia": f"{r.mes:02d}",
+            "codigo_identificacao": r.ident,
+            "codigo_matricula": r.matricula or r.ident,
+            "nome_servidor": r.nome,
+            "cpf_servidor": r.cpf,
+            "codigo_orgao": None,
+            "nome_orgao": r.orgao,
             "cargo": r.cargo,
             "valor_bruto": r.valor_bruto,
             "valor_liquido": r.valor_liquido,

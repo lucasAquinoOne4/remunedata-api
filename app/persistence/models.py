@@ -378,3 +378,32 @@ class PeriodStat(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class PersonLatest(Base):
+    """
+    Retrato mais recente de cada pessoa por fonte (uma linha por pessoa). A busca por nome e as
+    sugestões usam esta tabela (~800 mil linhas, índice trigram pequeno o bastante para caber em
+    memória) em vez das tabelas mensais (milhões de linhas com a mesma pessoa repetida por mês).
+    Reconstruída quando a carga do período mais recente de uma fonte termina.
+    """
+
+    __tablename__ = "person_latest"
+    __table_args__ = (
+        Index("ix_person_latest_fonte_ident", "fonte", "ident"),
+        Index("ix_person_latest_fonte_cargo", "fonte", "cargo"),
+        Index("ix_person_latest_fonte_orgao", "fonte", "orgao"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    fonte: Mapped[str] = mapped_column(String(10), nullable=False)
+    ident: Mapped[str] = mapped_column(String(40), nullable=False)
+    matricula: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    cargo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    orgao: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cpf: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    ano: Mapped[int] = mapped_column(Integer, nullable=False)
+    mes: Mapped[int] = mapped_column(Integer, nullable=False)
+    valor_bruto: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_liquido: Mapped[float] = mapped_column(Float, default=0.0)

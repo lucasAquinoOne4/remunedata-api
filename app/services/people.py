@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy import Integer, cast, delete, func, select
+from sqlalchemy import Integer, String, cast, delete, func, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from app.persistence.models import (
     ExecutionMonthly,
     FederalRemuneracao,
     PeriodStat,
+    PersonLatest,
     RemunerationCollected,
     SenadoRemuneracao,
 )
@@ -206,13 +207,19 @@ async def _monthly_series(session: AsyncSession, fonte: str, s: Spec, ano: Optio
 
 
 async def invalidate_period_stat(session: AsyncSession, fonte: str, ano: int, mes: int) -> None:
-    """Descarta o agregado de uma competência (chamado quando a carga do mês termina)."""
+    """
+    Chamado quando a carga de um mês termina: descarta o agregado da competência e, se ela for a
+    mais recente da fonte, reconstrói o retrato por pessoa.
+    """
     await session.execute(
         delete(PeriodStat).where(
             PeriodStat.fonte == fonte, PeriodStat.ano == ano, PeriodStat.mes == int(mes)
         )
     )
     await session.commit()
+    plist = await periods(session, fonte, 1)
+    if plist and plist[0]["ano"] == ano and int(plist[0]["mes"]) == int(mes):
+        await refresh_person_latest(session, fonte)
 
 
 async def stats(session: AsyncSession, fonte: str, ano: Optional[int]) -> dict:
@@ -276,16 +283,21 @@ async def stats(session: AsyncSession, fonte: str, ano: Optional[int]) -> dict:
 # ───────────────────────── sugestões ─────────────────────────
 
 
-async def suggest(session: AsyncSession, fonte: str, q: str, latest: Optional[dict]) -> List[dict]:
-    """Nomes que contêm `q` (pesquisa dinâmica). Usa o índice trigram e o mês mais recente."""
-    s = SPECS[fonte]
+async def suggest(
+    session: AsyncSession, fonte: str, q: str, latest: Optional[dict] = None
+) -> List[dict]:
+    """Nomes que contêm `q` (pesquisa dinâmica), lidos do retrato por pessoa (tabela pequena)."""
     pattern = f"%{like_exact(q)}%"
-    stmt = select(s.nome, s.cargo, s.orgao).where(
-        func.immutable_unaccent(s.nome).ilike(pattern, escape="\\")
-    )
-    if latest:
-        stmt = stmt.where(s.ano == latest["ano"], s.mes == int(latest["mes"]))
-    rows = (await session.execute(stmt.limit(60))).all()
+    rows = (
+        await session.execute(
+            select(PersonLatest.nome, PersonLatest.cargo, PersonLatest.orgao)
+            .where(
+                PersonLatest.fonte == fonte,
+                func.immutable_unaccent(PersonLatest.nome).ilike(pattern, escape="\\"),
+            )
+            .limit(60)
+        )
+    ).all()
     seen, out = set(), []
     for nome, cargo, orgao in rows:
         key = norm_name(nome)
@@ -302,6 +314,93 @@ async def suggest(session: AsyncSession, fonte: str, q: str, latest: Optional[di
         )
     out.sort(key=lambda x: (not norm_name(x["nome"]).startswith(norm_name(q)), x["nome"]))
     return out
+
+
+# ───────────────────────── retrato por pessoa (person_latest) ─────────────────────────
+
+
+async def snapshots(session: AsyncSession) -> Dict[str, dict]:
+    """{fonte: {ano, mes}} do retrato por pessoa (fontes sem retrato não aparecem)."""
+    rows = await session.execute(
+        select(PersonLatest.fonte, func.max(PersonLatest.ano * 100 + PersonLatest.mes)).group_by(
+            PersonLatest.fonte
+        )
+    )
+    return {f: {"ano": int(v) // 100, "mes": int(v) % 100} for f, v in rows.all() if v}
+
+
+async def refresh_person_latest(session: AsyncSession, fonte: str) -> int:
+    """
+    Reconstrói o retrato mais recente de uma fonte (apaga e insere na mesma transação).
+    Devolve quantas pessoas ficaram no retrato.
+    """
+    plist = await periods(session, fonte, 1)
+    await session.execute(delete(PersonLatest).where(PersonLatest.fonte == fonte))
+    if not plist:
+        await session.commit()
+        return 0
+    ano, mes = plist[0]["ano"], int(plist[0]["mes"])
+    cols = [
+        PersonLatest.fonte, PersonLatest.ident, PersonLatest.matricula, PersonLatest.nome,
+        PersonLatest.cargo, PersonLatest.orgao, PersonLatest.cpf, PersonLatest.ano,
+        PersonLatest.mes, PersonLatest.valor_bruto, PersonLatest.valor_liquido,
+    ]  # fmt: skip
+    from sqlalchemy import literal
+
+    if fonte == "DF":
+        m = RemunerationCollected
+        sel = (
+            select(
+                literal("DF"),
+                m.codigo_identificacao,
+                m.codigo_matricula,
+                m.nome_servidor,
+                m.cargo,
+                m.nome_orgao,
+                m.cpf_servidor,
+                literal(ano),
+                literal(mes),
+                m.valor_bruto,
+                m.valor_liquido,
+            )  # fmt: skip
+            .where(m.ano_exercicio == ano, m.mes_referencia == f"{mes:02d}")
+            .distinct(m.codigo_identificacao, m.codigo_matricula)
+            .order_by(m.codigo_identificacao, m.codigo_matricula, m.id)
+        )
+    elif fonte == "SENADO":
+        m = SenadoRemuneracao
+        sel = (
+            select(
+                literal("SENADO"),
+                cast(m.sequencial, String(40)),
+                literal(None),
+                func.max(m.nome),
+                func.max(m.cargo),
+                func.max(m.lotacao_nome),
+                literal(None),
+                literal(ano),
+                literal(mes),
+                func.sum(m.valor_bruto),
+                func.sum(m.valor_liquido),
+            )  # fmt: skip
+            .where(m.ano == ano, m.mes == mes)
+            .group_by(m.sequencial)
+        )
+    else:
+        m = FederalRemuneracao
+        sel = select(
+            literal("FEDERAL"), cast(m.id_servidor_portal, String(40)), m.matricula_mascarada,
+            m.nome, m.cargo, m.org_exercicio, m.cpf_mascarado, literal(ano), literal(mes),
+            m.valor_bruto, m.valor_liquido,
+        ).where(m.ano == ano, m.mes == mes)  # fmt: skip
+    await session.execute(insert(PersonLatest).from_select([c.key for c in cols], sel))
+    await session.commit()
+    total = (
+        await session.execute(
+            select(func.count()).select_from(PersonLatest).where(PersonLatest.fonte == fonte)
+        )
+    ).scalar_one()
+    return int(total)
 
 
 # ───────────────────────── perfil da pessoa ─────────────────────────
@@ -570,8 +669,9 @@ async def other_sources(
     session: AsyncSession, fonte: str, nome: str, cpf_masked: Optional[str]
 ) -> List[dict]:
     """
-    Cruzamento PROBABILÍSTICO com as outras fontes, por nome exato (sem acento) e, quando as
-    duas fontes trazem o CPF mascarado, pelos 6 dígitos centrais. Nunca é confirmação de identidade.
+    Cruzamento PROBABILÍSTICO com as outras fontes (retrato mais recente de cada uma), por nome
+    exato (sem acento) e, quando as duas fontes trazem o CPF mascarado, pelos 6 dígitos centrais.
+    Nunca é confirmação de identidade.
     """
     wanted = norm_name(nome)
     mine = cpf_core(cpf_masked)
@@ -579,37 +679,29 @@ async def other_sources(
     for other in SOURCES:
         if other == fonte:
             continue
-        s = SPECS[other]
-        cols = [s.ident, s.nome, s.cargo, s.orgao, s.bruto, s.ano, s.mes]
-        cpf_col = (
-            RemunerationCollected.cpf_servidor
-            if other == "DF"
-            else FederalRemuneracao.cpf_mascarado
-            if other == "FEDERAL"
-            else None
-        )
-        if cpf_col is not None:
-            cols.append(cpf_col)
-        # período mais recente EM QUE O NOME APARECE nessa fonte (a pessoa pode não estar no
-        # último mês carregado)
         rows = (
             await session.execute(
-                select(*cols)
-                .where(func.immutable_unaccent(s.nome).ilike(like_exact(nome), escape="\\"))
-                .order_by(s.ano.desc(), s.mes.desc())
-                .limit(30)
+                select(
+                    PersonLatest.ident,
+                    PersonLatest.nome,
+                    PersonLatest.cargo,
+                    PersonLatest.orgao,
+                    PersonLatest.valor_bruto,
+                    PersonLatest.ano,
+                    PersonLatest.mes,
+                    PersonLatest.cpf,
+                )  # fmt: skip
+                .where(
+                    PersonLatest.fonte == other,
+                    func.immutable_unaccent(PersonLatest.nome).ilike(like_exact(nome), escape="\\"),
+                )
+                .limit(10)
             )
         ).all()
-        rows = [r for r in rows if norm_name(r[1]) == wanted]
-        if not rows:
-            continue
-        newest = (rows[0][5], rows[0][6])
-        seen_ids = set()
         for row in rows:
-            if (row[5], row[6]) != newest or row[0] in seen_ids:
+            if norm_name(row[1]) != wanted:
                 continue
-            seen_ids.add(row[0])
-            theirs = cpf_core(row[7]) if cpf_col is not None else None
+            theirs = cpf_core(row[7]) if other in ("DF", "FEDERAL") else None
             if mine and theirs and mine != theirs:
                 continue  # CPFs centrais diferentes: pessoas diferentes
             strong = bool(mine and theirs and mine == theirs)

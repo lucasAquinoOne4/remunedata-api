@@ -14,13 +14,14 @@ from app.api.deps import get_current_user
 from app.collector.federal import FederalCollector, iter_records
 from app.core.cache import cache
 from app.main import app
-from app.persistence.models import RemunerationCollected
+from app.persistence.models import PersonLatest, RemunerationCollected
 from app.persistence.repositories import (
     ExecutionRepository,
     FederalRepository,
     RemunerationRepository,
     SenadoRepository,
 )
+from app.services import people
 
 CAD_HEADER = (
     "Id_SERVIDOR_PORTAL;NOME;CPF;MATRICULA;DESCRICAO_CARGO;CLASSE_CARGO;FUNCAO;ORG_LOTACAO;"
@@ -244,6 +245,8 @@ async def _seed_df(db_session, ident, nome, cpf, ano, mes, bruto, cargo="ANALIST
     exec_repo = ExecutionRepository(db_session)
     annual = await exec_repo.get_or_create_annual(ano)
     monthly = await exec_repo.create_monthly(annual.id, f"{mes:02d}")
+    monthly.registros_coletados = 1
+    await db_session.commit()
     item = RemunerationCollected(
         execution_id=annual.id,
         monthly_execution_id=monthly.id,
@@ -280,6 +283,7 @@ async def test_busca_federal_periods_suggest_stats(client, db_session, override_
         for i in range(5)
     ]
     await f_repo.replace_month(2089, 4, iter(rows))
+    await people.refresh_person_latest(db_session, "FEDERAL")
 
     r = await client.get("/api/v1/remuneration/?fonte=FEDERAL&nome=fulano%20teste&ano=2089")
     assert r.status_code == 200
@@ -370,6 +374,9 @@ async def test_perfil_cruza_fontes_provavel_possivel_e_descarta_cpf_diferente(
             )
         ],
     )
+
+    for fonte_refresh in ("DF", "SENADO", "FEDERAL"):
+        await people.refresh_person_latest(db_session, fonte_refresh)
 
     r = await client.get("/api/v1/remuneration/person?fonte=FEDERAL&id=777001")
     assert r.status_code == 200
@@ -569,3 +576,55 @@ def test_sync_federal_enfileira_so_meses_publicados_e_nao_carregados(monkeypatch
     result = tasks.sync_federal_task()
     assert enfileirados == [(2026, 8)]
     assert result["months"] == ["2026-08"]
+
+
+@pytest.mark.asyncio
+async def test_person_latest_uma_linha_por_pessoa_e_busca_rapida(
+    db_session, client, override_get_session
+):
+    """O retrato guarda só o período mais recente, uma linha por pessoa, e a busca o usa."""
+    from sqlalchemy import func, select
+
+    f_repo = FederalRepository(db_session)
+    antigos = [
+        {
+            "id_servidor_portal": 61,
+            "ano": 2083,
+            "mes": 1,
+            "nome": "RETRATO UM",
+            "cargo": "A",
+            "valor_bruto": 1.0,
+        },
+        {
+            "id_servidor_portal": 62,
+            "ano": 2083,
+            "mes": 1,
+            "nome": "RETRATO DOIS",
+            "cargo": "A",
+            "valor_bruto": 2.0,
+        },
+    ]
+    recentes = [
+        {
+            "id_servidor_portal": 61,
+            "ano": 2083,
+            "mes": 2,
+            "nome": "RETRATO UM",
+            "cargo": "B",
+            "valor_bruto": 10.0,
+        },
+    ]
+    await f_repo.replace_month(2083, 1, iter(antigos))
+    await f_repo.replace_month(2083, 2, iter(recentes))
+    total = await people.refresh_person_latest(db_session, "FEDERAL")
+    assert total == 1  # só quem está no período mais recente (2083/02), uma linha por pessoa
+    row = (
+        (await db_session.execute(select(PersonLatest).where(PersonLatest.fonte == "FEDERAL")))
+        .scalars()
+        .one()
+    )
+    assert (row.ident, row.cargo, row.mes, row.valor_bruto) == ("61", "B", 2, 10.0)
+    # refresh é idempotente
+    assert await people.refresh_person_latest(db_session, "FEDERAL") == 1
+    count = (await db_session.execute(select(func.count()).select_from(PersonLatest))).scalar_one()
+    assert count == 1

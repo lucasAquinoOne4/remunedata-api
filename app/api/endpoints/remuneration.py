@@ -27,6 +27,7 @@ from app.core.cache import RedisCache, get_cache
 from app.persistence.repositories import (
     COUNT_CAP,
     FederalRepository,
+    PersonLatestRepository,
     RemunerationRepository,
     SenadoRepository,
 )
@@ -42,6 +43,18 @@ def _cache_key(prefix: str, **params) -> str:
     """Chave de cache estável a partir dos parâmetros (inclui só valores não vazios)."""
     raw = json.dumps({k: v for k, v in params.items() if v not in (None, "")}, sort_keys=True)
     return f"remuneration:{prefix}:{hashlib.sha1(raw.encode()).hexdigest()[:20]}"
+
+
+async def _snapshots(session: AsyncSession, cache: RedisCache) -> dict:
+    """
+    Competência do retrato por pessoa de cada fonte (só existe se o retrato foi construído).
+    A busca só usa o caminho rápido quando o retrato existe.
+    """
+    data = await cache.get("remuneration:snapshots")
+    if data is None:
+        data = await people.snapshots(session)
+        await cache.set("remuneration:snapshots", data, ttl=600)
+    return data
 
 
 def _repo_for(fonte: str, df, senado, federal):
@@ -68,6 +81,7 @@ async def search_remuneration(
     repo: RemunerationRepository = Depends(get_remuneration_repository),
     senado_repo: SenadoRepository = Depends(get_senado_repository),
     federal_repo: FederalRepository = Depends(get_federal_repository),
+    session: AsyncSession = Depends(get_session),
     cache: RedisCache = Depends(get_cache),
     user: dict = Depends(require_active_subscription),
 ):
@@ -89,7 +103,22 @@ async def search_remuneration(
         return cached
 
     offset = (page - 1) * size
-    if fonte == "DF":
+    latest = None
+    if not cpf:
+        latest = (await _snapshots(session, cache)).get(fonte)
+    # Caminho rápido: sem período (ou no mais recente) a busca usa o retrato por pessoa, uma
+    # tabela pequena com índice trigram em memória, em vez das tabelas mensais.
+    use_latest = bool(
+        latest
+        and (nome or cargo or orgao)
+        and (ano is None or ano == latest["ano"])
+        and (mes is None or int(mes) == int(latest["mes"]))
+    )
+    if use_latest:
+        items, total = await PersonLatestRepository(session).search(
+            fonte, nome=nome, cargo=cargo, orgao=orgao, limit=size, offset=offset
+        )
+    elif fonte == "DF":
         items, total = await repo.search(
             nome=nome,
             cpf=cpf,

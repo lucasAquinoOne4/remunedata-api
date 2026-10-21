@@ -272,3 +272,56 @@ def sync_federal_task():
     for ano, mes in queued:
         collect_federal_month_task.delay(ano, mes)
     return {"status": "queued", "months": [f"{a}-{m:02d}" for a, m in queued]}
+
+
+@celery_app.task(name="refresh_person_latest_task")
+def refresh_person_latest_task(fonte: str | None = None):
+    """Reconstrói o retrato por pessoa (todas as fontes, ou só uma)."""
+    from app.services import people
+
+    async def _run():
+        out = {}
+        async with async_session_maker() as session:
+            for f in [fonte] if fonte else list(people.SOURCES):
+                out[f] = await people.refresh_person_latest(session, f)
+        await cache.clear_prefix("remuneration:")
+        return out
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()
+
+
+@celery_app.task(name="warm_portal_cache_task")
+def warm_portal_cache_task():
+    """
+    Pré-aquece o que a primeira consulta do dia pagaria caro numa máquina pequena: competências e
+    gráficos das três fontes. Roda depois que a instância liga (05:30) e após cargas.
+    """
+    from app.services import people
+
+    async def _run():
+        async with async_session_maker() as session:
+            data = {f: await people.periods(session, f) for f in people.SOURCES}
+            await cache.set("remuneration:periods", data, ttl=21600)
+            for f in people.SOURCES:
+                stats = await people.stats(session, f, None)
+                import hashlib
+                import json
+
+                raw = json.dumps({"fonte": f}, sort_keys=True)
+                key = f"remuneration:stats:{hashlib.sha1(raw.encode()).hexdigest()[:20]}"
+                await cache.set(key, stats, ttl=3600)
+        return {f: len(v) for f, v in data.items()}
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()

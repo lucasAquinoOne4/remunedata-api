@@ -151,7 +151,7 @@ async def db_session(db_engine):
             text(
                 "TRUNCATE execution_annual, execution_monthly, remuneration_collected, "
                 "user_subscription, subscription_plan, billing_transaction, support_message, "
-                "senado_remuneracao, federal_remuneracao CASCADE"
+                "senado_remuneracao, federal_remuneracao, person_latest, period_stat CASCADE"
             )
         )
         await session.commit()
@@ -197,3 +197,13 @@ def valid_token_headers():
     O header é necessário para o HTTPBearer não rejeitar a requisição antes do override.
     """
     return {"Authorization": "Bearer mock-valid-token-for-tests"}
+
+
+@pytest.fixture(autouse=True)
+async def _limpa_cache_remuneration():
+    """O cache Redis dos endpoints (busca, perfil, estatísticas) não pode vazar entre testes."""
+    from app.core.cache import cache
+
+    await cache.clear_prefix("remuneration:")
+    yield
+    await cache.clear_prefix("remuneration:")

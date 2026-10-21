@@ -190,6 +190,9 @@ class SenadoCollector:
             records.append(build_record(item, cadastro_item, ano=ano, mes=mes))
 
         await self.repo.replace_month(ano, mes, records)
-        await invalidate_period_stat(self.repo.session, "SENADO", ano, mes)
+        try:
+            await invalidate_period_stat(self.repo.session, "SENADO", ano, mes)
+        except Exception as exc:  # agregados e retrato são cache: nunca derrubam a carga
+            logger.warning(f"Não foi possível atualizar agregados de {mes:02d}/{ano}: {exc}")
         logger.info(f"Senado {mes:02d}/{ano}: {len(records)} registros gravados.")
         return {"ano": ano, "mes": mes, "registros": len(records), "status": "success"}
