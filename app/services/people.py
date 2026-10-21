@@ -241,23 +241,34 @@ async def stats(session: AsyncSession, fonte: str, ano: Optional[int]) -> dict:
 
     mensal = await _monthly_series(session, fonte, s, ano)
 
-    atual = (s.ano == l_ano, s.mes == l_mes)
+    snap = (await snapshots(session)).get(fonte)
+    if snap and (snap["ano"], snap["mes"]) == (l_ano, l_mes):
+        # O retrato por pessoa é exatamente "o período mais recente, uma linha por pessoa":
+        # agrega nele (tabela pequena, em memória) em vez de varrer a tabela mensal inteira.
+        t, ano_col, mes_col, bruto, orgao = (
+            PersonLatest, PersonLatest.ano, PersonLatest.mes, PersonLatest.valor_bruto, PersonLatest.orgao,
+        )  # fmt: skip
+        atual = (t.fonte == fonte, ano_col == l_ano, mes_col == l_mes)
+        orgao_col = orgao
+    else:
+        t, bruto, orgao_col = s.model, s.bruto, s.orgao
+        atual = (s.ano == l_ano, s.mes == l_mes)
     buckets = [
-        func.count().filter((s.bruto >= lo) & ((s.bruto < hi) if hi is not None else True))
+        func.count().filter((bruto >= lo) & ((bruto < hi) if hi is not None else True))
         for lo, hi, _ in _FAIXAS
     ]
     agg = (
         await session.execute(
-            select(func.count(), func.avg(s.bruto), func.sum(s.bruto), *buckets).where(*atual)
+            select(func.count(), func.avg(bruto), func.sum(bruto), *buckets).where(*atual)
         )
     ).one()
     totals, counts = agg[:3], agg[3:]
 
     top = (
         await session.execute(
-            select(s.orgao, func.count().label("n"), func.avg(s.bruto))
-            .where(*atual, s.orgao.isnot(None))
-            .group_by(s.orgao)
+            select(orgao_col, func.count().label("n"), func.avg(bruto))
+            .where(*atual, orgao_col.isnot(None))
+            .group_by(orgao_col)
             .order_by(func.count().desc())
             .limit(10)
         )

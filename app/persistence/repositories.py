@@ -687,18 +687,15 @@ class PersonLatestRepository:
 
         capped = select(PersonLatest.id).where(*filters).limit(COUNT_CAP + 1).subquery()
         total = (await self.session.execute(select(func.count()).select_from(capped))).scalar_one()
-        rows = (
-            (
-                await self.session.execute(
-                    select(PersonLatest)
-                    .where(*filters)
-                    .order_by(PersonLatest.nome, PersonLatest.ident)
-                    .limit(limit)
-                    .offset(offset)
-                )
-            )
-            .scalars()
-            .all()
+        rows = await _ordered_page(
+            self.session,
+            PersonLatest,
+            PersonLatest.nome,
+            PersonLatest.ano,
+            PersonLatest.mes,
+            filters,
+            limit,
+            offset,
         )
         return [self.to_read(r) for r in rows], total
 
