@@ -241,10 +241,34 @@ def collect_federal_month_task(self, ano: int, mes: int, force: bool = False):
 @celery_app.task(name="sync_federal_task")
 def sync_federal_task():
     """
-    Verificação semanal do Executivo federal: considera só os últimos meses e NÃO faz requisição
-    para os que já estão no banco (os dados mudam pouco: uma carga por mês basta).
+    Verificação semanal do Executivo federal. Percorre os últimos meses do mais recente para o
+    mais antigo e garante que os `FEDERAL_SYNC_MONTHS` meses mais recentes PUBLICADOS estejam
+    carregados. Mês já carregado não gera requisição; mês não publicado custa um HEAD.
     """
-    months = _recent_months(get_settings().federal_sync_months)
-    for ano, mes in months:
+    wanted = get_settings().federal_sync_months
+
+    async def _plan():
+        client = FederalDownloadClient()
+        queued, loaded = [], 0
+        async with async_session_maker() as session:
+            repo = FederalRepository(session)
+            for ano, mes in _recent_months(wanted + 4):
+                if loaded >= wanted:
+                    break
+                if await repo.month_loaded(ano, mes):
+                    loaded += 1
+                elif await client.is_published(ano, mes):
+                    queued.append((ano, mes))
+                    loaded += 1
+        return queued
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        queued = loop.run_until_complete(_plan())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()
+    for ano, mes in queued:
         collect_federal_month_task.delay(ano, mes)
-    return {"status": "queued", "months": [f"{a}-{m:02d}" for a, m in months]}
+    return {"status": "queued", "months": [f"{a}-{m:02d}" for a, m in queued]}

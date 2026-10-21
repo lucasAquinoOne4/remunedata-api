@@ -524,3 +524,48 @@ async def test_export_de_execucao_continua_sendo_de_assinante(
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(require_active_subscription, None)
+
+
+def test_sync_federal_enfileira_so_meses_publicados_e_nao_carregados(monkeypatch):
+    """Meses recentes não publicados (HEAD falso) são ignorados; o publicado entra na fila."""
+    from unittest.mock import MagicMock
+
+    from app.workers import tasks
+
+    publicados = {(2026, 8), (2026, 7)}
+    carregados = {(2026, 7)}  # julho já está no banco: não gera requisição nem tarefa
+
+    class FakeRepo:
+        def __init__(self, session):
+            pass
+
+        async def month_loaded(self, ano, mes):
+            return (ano, mes) in carregados
+
+    class FakeClient:
+        async def is_published(self, ano, mes):
+            return (ano, mes) in publicados
+
+    class FakeSession:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *a):
+            return False
+
+    enfileirados = []
+    monkeypatch.setattr(tasks, "FederalRepository", FakeRepo)
+    monkeypatch.setattr(tasks, "FederalDownloadClient", FakeClient)
+    monkeypatch.setattr(tasks, "async_session_maker", lambda: FakeSession())
+    monkeypatch.setattr(
+        tasks,
+        "_recent_months",
+        lambda n: [(2026, 10), (2026, 9), (2026, 8), (2026, 7), (2026, 6)][:n],
+    )
+    monkeypatch.setattr(
+        tasks.collect_federal_month_task, "delay", lambda a, m: enfileirados.append((a, m))
+    )
+
+    result = tasks.sync_federal_task()
+    assert enfileirados == [(2026, 8)]
+    assert result["months"] == ["2026-08"]
