@@ -8,16 +8,19 @@ import asyncio
 from celery.utils.log import get_task_logger
 
 from app.collector.annual import AnnualCollector
+from app.collector.federal import FederalCollector
 from app.collector.monthly import MonthlyCollector
 from app.collector.senado import SenadoCollector
 from app.core import locks
 from app.core.cache import cache
 from app.core.celery_app import celery_app
 from app.core.config import get_settings
+from app.infra.federal_client import FederalDownloadClient
 from app.infra.senado_client import SenadoClient
 from app.infra.transparencia_client import TransparenciaClient
 from app.persistence.repositories import (
     ExecutionRepository,
+    FederalRepository,
     RemunerationRepository,
     SenadoRepository,
 )
@@ -179,6 +182,7 @@ def _recent_months(n: int) -> list[tuple[int, int]]:
 def collect_senado_month_task(self, ano: int, mes: int):
     """Coleta a folha de um mês do Senado Federal (idempotente)."""
     logger.info(f"Iniciando coleta do Senado {mes:02d}/{ano} (Task ID: {self.request.id})")
+    locks.set_running("SENADO", True)
 
     async def _run():
         async with async_session_maker() as session:
@@ -195,6 +199,7 @@ def collect_senado_month_task(self, ano: int, mes: int):
     finally:
         loop.run_until_complete(async_engine.dispose())
         loop.close()
+        locks.set_running("SENADO", False)
 
 
 @celery_app.task(name="sync_senado_task")
@@ -203,4 +208,43 @@ def sync_senado_task():
     months = _recent_months(get_settings().senado_sync_months)
     for ano, mes in months:
         collect_senado_month_task.delay(ano, mes)
+    return {"status": "queued", "months": [f"{a}-{m:02d}" for a, m in months]}
+
+
+@celery_app.task(name="collect_federal_month_task", bind=True)
+def collect_federal_month_task(self, ano: int, mes: int, force: bool = False):
+    """
+    Carrega um mês do Executivo federal (ZIP do Portal da Transparência). Um mês já carregado é
+    pulado sem nenhuma requisição, a menos que force=True.
+    """
+    logger.info(f"Iniciando carga federal {mes:02d}/{ano} (force={force}, Task {self.request.id})")
+    locks.set_running("FEDERAL", True)
+
+    async def _run():
+        async with async_session_maker() as session:
+            collector = FederalCollector(FederalDownloadClient(), FederalRepository(session))
+            result = await collector.collect_month(ano, mes, force=force)
+            if result["registros"]:
+                await cache.clear_prefix("remuneration:")
+            return result
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()
+        locks.set_running("FEDERAL", False)
+
+
+@celery_app.task(name="sync_federal_task")
+def sync_federal_task():
+    """
+    Verificação semanal do Executivo federal: considera só os últimos meses e NÃO faz requisição
+    para os que já estão no banco (os dados mudam pouco: uma carga por mês basta).
+    """
+    months = _recent_months(get_settings().federal_sync_months)
+    for ano, mes in months:
+        collect_federal_month_task.delay(ano, mes)
     return {"status": "queued", "months": [f"{a}-{m:02d}" for a, m in months]}

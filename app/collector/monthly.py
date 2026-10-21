@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.infra.transparencia_client import TransparenciaClient
 from app.persistence.models import ExecutionMonthly, RemunerationCollected
 from app.persistence.repositories import ExecutionRepository, RemunerationRepository
+from app.services.people import invalidate_period_stat
 
 logger = get_logger(__name__)
 
@@ -210,4 +211,8 @@ class MonthlyCollector:
             monthly_exec.finished_at = datetime.now(timezone.utc)
 
         await self.execution_repo.session.commit()
+        try:
+            await invalidate_period_stat(self.execution_repo.session, "DF", ano, int(mes))
+        except Exception as exc:  # o agregado é só cache: nunca derruba a coleta
+            logger.warning(f"Não foi possível invalidar o agregado de {mes}/{ano}: {exc}")
         return monthly_exec

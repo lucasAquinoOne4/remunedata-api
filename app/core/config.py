@@ -104,6 +104,23 @@ class Settings(BaseSettings):
         default=True,
         description="Coleta os meses do mais recente para o mais antigo (dados novos aparecem antes)",
     )
+    portal_federal_download_base_url: str = Field(
+        default="https://portaldatransparencia.gov.br/download-de-dados/servidores",
+        description="Base dos downloads mensais (ZIP) de servidores do Portal da Transparência federal",
+    )
+    portal_federal_api_key: str = Field(
+        default="",
+        description=(
+            "Chave da API do Portal da Transparência federal (header chave-api-dados). "
+            "A carga em lote por ZIP não usa chave; reservada para enriquecer detalhes via API."
+        ),
+    )
+    federal_sync_months: int = Field(
+        default=2,
+        description="Quantos meses recentes a verificação semanal do Executivo federal considera",
+        ge=1,
+        le=12,
+    )
     transparencia_batch_size: int = Field(
         default=1,
         description="Páginas buscadas em paralelo por lote (reduzir se a API responder 429)",

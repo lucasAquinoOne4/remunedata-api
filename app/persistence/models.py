@@ -309,3 +309,72 @@ class SenadoRemuneracao(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class FederalRemuneracao(Base):
+    """
+    Remuneração mensal de servidores civis do Executivo federal (SIAPE), vinda do download em
+    lote do Portal da Transparência. Une Cadastro e Remuneracao por Id_SERVIDOR_PORTAL.
+    Não guarda o payload bruto (centenas de milhares de linhas por mês).
+    """
+
+    __tablename__ = "federal_remuneracao"
+    __table_args__ = (
+        UniqueConstraint("id_servidor_portal", "ano", "mes", name="uq_federal_rem_periodo"),
+        Index("ix_federal_rem_ano_mes", "ano", "mes"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    id_servidor_portal: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    ano: Mapped[int] = mapped_column(Integer, nullable=False)
+    mes: Mapped[int] = mapped_column(Integer, nullable=False)
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    cpf_mascarado: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    matricula_mascarada: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
+    # Cadastro
+    cargo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    funcao: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    org_lotacao: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    org_exercicio: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    orgao_superior: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tipo_vinculo: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    situacao_vinculo: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    regime_juridico: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    jornada: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    uf_exercicio: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+
+    # Valores (R$)
+    remuneracao_basica_bruta: Mapped[float] = mapped_column(Float, default=0.0)
+    abate_teto: Mapped[float] = mapped_column(Float, default=0.0)
+    gratificacao_natalina: Mapped[float] = mapped_column(Float, default=0.0)
+    abate_teto_natalina: Mapped[float] = mapped_column(Float, default=0.0)
+    ferias: Mapped[float] = mapped_column(Float, default=0.0)
+    outras_eventuais: Mapped[float] = mapped_column(Float, default=0.0)
+    irrf: Mapped[float] = mapped_column(Float, default=0.0)
+    pss_rpgs: Mapped[float] = mapped_column(Float, default=0.0)
+    demais_deducoes: Mapped[float] = mapped_column(Float, default=0.0)
+    verbas_indenizatorias: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_bruto: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_liquido: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class PeriodStat(Base):
+    """
+    Agregados por competência (registros, média e total bruto) para os gráficos. Evita varrer
+    milhões de linhas a cada consulta: calculado sob demanda por mês e invalidado quando a carga
+    do mês termina.
+    """
+
+    __tablename__ = "period_stat"
+
+    fonte: Mapped[str] = mapped_column(String(10), primary_key=True)
+    ano: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mes: Mapped[int] = mapped_column(Integer, primary_key=True)
+    registros: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    media_bruto: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    total_bruto: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )

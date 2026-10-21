@@ -22,6 +22,7 @@ from app.core.logging import get_logger
 from app.infra.senado_client import SenadoClient
 from app.persistence.models import SenadoRemuneracao
 from app.persistence.repositories import SenadoRepository
+from app.services.people import invalidate_period_stat
 
 logger = get_logger(__name__)
 
@@ -189,5 +190,6 @@ class SenadoCollector:
             records.append(build_record(item, cadastro_item, ano=ano, mes=mes))
 
         await self.repo.replace_month(ano, mes, records)
+        await invalidate_period_stat(self.repo.session, "SENADO", ano, mes)
         logger.info(f"Senado {mes:02d}/{ano}: {len(records)} registros gravados.")
         return {"ano": ano, "mes": mes, "registros": len(records), "status": "success"}

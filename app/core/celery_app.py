@@ -32,6 +32,12 @@ celery_app.conf.beat_schedule = {
         "task": "sync_recent_years_task",
         "schedule": crontab(hour=6, minute=0),  # Diário às 06:00 (instância liga às 05:30)
     },
+    "sync-federal-weekly": {
+        "task": "sync_federal_task",
+        # Uma verificação por semana (quarta 08:00): o portal publica o mês anterior por volta
+        # do dia 9-10 e os dados mudam pouco. Meses já carregados não geram requisição.
+        "schedule": crontab(hour=8, minute=0, day_of_week="wed"),
+    },
     "sync-senado-daily": {
         "task": "sync_senado_task",
         "schedule": crontab(hour=7, minute=0),  # Diário às 07:00 (instância liga às 05:30)

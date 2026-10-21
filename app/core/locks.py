@@ -64,3 +64,22 @@ def ban_remaining() -> float:
 
     value = _client().get(DF_BAN_KEY)
     return max(0.0, float(value) - time.time()) if value else 0.0
+
+
+# --- Sinalização "carga em execução" (para a tela admin) ---
+_RUNNING_TTL = 6 * 3600
+
+
+def set_running(fonte: str, running: bool) -> None:
+    client = _client()
+    key = f"load:running:{fonte}"
+    if running:
+        client.set(key, "1", ex=_RUNNING_TTL)
+    else:
+        client.delete(key)
+
+
+def is_running(fonte: str) -> bool:
+    if fonte == "DF":
+        return current_owner(DF_COLLECT_LOCK) is not None
+    return _client().get(f"load:running:{fonte}") is not None
