@@ -9,6 +9,7 @@ Base: [estudo Transparência Brasil/República.org, abr/2026](https://backend.tr
 |---|---|---|
 | DF | Integrado (API paginada, `x-client-id`) | `remuneration_collected` |
 | Senado Federal | Integrado (2 requisições por mês: folha + cadastro; junção por nome) | `senado_remuneracao` |
+| Executivo federal (SIAPE) | Integrado (ZIP mensal, junção exata por `Id_SERVIDOR_PORTAL`; ADR 0008) | `federal_remuneracao` |
 
 ## Fontes candidatas (ordem recomendada)
 

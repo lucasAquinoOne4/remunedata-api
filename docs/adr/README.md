@@ -11,6 +11,8 @@ Decisões que mudaram o sistema depois dos documentos `docs/01`–`15` (que desc
 | [0005](0005-abacatepay-v2-confirmacao-ativa.md) | AbacatePay v2 com confirmação ativa do pagamento | Aceito |
 | [0006](0006-deploy-ec2-free-tier-agendado.md) | Deploy em EC2 t3.micro, ligada só no horário de uso | Aceito |
 | [0007](0007-busca-por-nome-com-indice-trigram.md) | Busca por nome com índice trigram | Aceito |
+| [0008](0008-executivo-federal-por-download-mensal.md) | Executivo federal por download mensal em lote | Aceito |
+| [0009](0009-portal-desempenho-cache-e-carga-so-admin.md) | Desempenho do portal, cache em Redis e carga só para admin | Aceito |
 
 O frontend tem o seu próprio ADR em `remunedata-web/docs/adr/`.
 
