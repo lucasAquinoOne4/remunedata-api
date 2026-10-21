@@ -59,7 +59,7 @@ class RemunerationRead(BaseModel):
     cargo: Optional[str] = None
     valor_bruto: float
     valor_liquido: float
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -67,6 +67,7 @@ class RemunerationRead(BaseModel):
 class PaginatedRemuneration(BaseModel):
     items: List[RemunerationRead]
     total: int
+    total_capped: bool = False
     page: int
     size: int
     pages: int

@@ -3,12 +3,26 @@ app/api/endpoints/admin.py
 Rotas administrativas para gestão de usuários, faturamento e suporte.
 """
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+from typing import Optional
 
-from app.api.deps import get_admin_repository, get_admin_user
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_admin_repository, get_admin_user, get_session
+from app.core import locks
+from app.core.cache import RedisCache, get_cache
 from app.core.config import settings
 from app.persistence.admin_repository import AdminRepository
+from app.persistence.models import ExecutionAnnual
+from app.services import people
+from app.workers.tasks import (
+    collect_annual_task,
+    collect_federal_month_task,
+    collect_senado_month_task,
+)
 
 router = APIRouter()
 
@@ -90,3 +104,93 @@ async def reply_to_user(
 
     msg = await repo.add_message(user_id=user_id, content=content, is_from_admin=True)
     return msg
+
+
+# ─── Carga de dados (somente admin) ──────────────────────────────────────────
+
+
+@router.get("/loads", summary="Status das cargas de dados por fonte")
+async def loads_status(
+    admin: dict = Depends(get_admin_user),
+    session: AsyncSession = Depends(get_session),
+    cache: RedisCache = Depends(get_cache),
+):
+    """Meses carregados, total de registros, último mês e indicador 'em execução' por fonte."""
+    cached = await cache.get("remuneration:admin_loads")
+    if cached is None:
+        fontes = []
+        for fonte in people.SOURCES:
+            s_ = people.SPECS[fonte]
+            rows = (
+                await session.execute(
+                    select(s_.ano, s_.mes, func.count())
+                    .group_by(s_.ano, s_.mes)
+                    .order_by(s_.ano.desc(), s_.mes.desc())
+                    .limit(36)
+                )
+            ).all()
+            meses = [
+                {"ano": int(a), "mes": f"{int(m):02d}", "registros": int(n)} for a, m, n in rows
+            ]
+            fontes.append(
+                {
+                    "fonte": fonte,
+                    "total_registros": sum(m["registros"] for m in meses),
+                    "meses": meses,
+                    "ultimo": {"ano": meses[0]["ano"], "mes": meses[0]["mes"]} if meses else None,
+                }
+            )
+        recent = (
+            (
+                await session.execute(
+                    select(ExecutionAnnual).order_by(ExecutionAnnual.id.desc()).limit(10)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        cached = {
+            "fontes": fontes,
+            "coleta_df": [
+                {
+                    "id": e.id,
+                    "ano": e.ano_exercicio,
+                    "status": e.status,
+                    "meses_processados": e.total_meses_processados,
+                    "registros": e.total_registros_coletados,
+                }
+                for e in recent
+            ],
+        }
+        await cache.set("remuneration:admin_loads", cached, ttl=120)
+    # "em execução" não é cacheado: vem direto do Redis
+    for item in cached["fontes"]:
+        item["em_execucao"] = await asyncio.to_thread(locks.is_running, item["fonte"])
+    return cached
+
+
+@router.post("/loads/{fonte}", summary="Dispara uma carga de dados")
+async def trigger_load(
+    fonte: str,
+    ano: int = Query(..., ge=2000, le=2100),
+    mes: Optional[int] = Query(None, ge=1, le=12),
+    force: bool = Query(False, description="Recarrega mesmo que o mês já esteja no banco"),
+    admin: dict = Depends(get_admin_user),
+):
+    """DF: coleta o ano inteiro | SENADO e FEDERAL: um mês (ano + mes)."""
+    fonte = fonte.upper()
+    if fonte not in people.SOURCES:
+        raise HTTPException(status_code=404, detail="Fonte desconhecida.")
+    if await asyncio.to_thread(locks.is_running, fonte):
+        return {"task_id": None, "status": "skipped", "detalhe": "Já existe uma carga em execução."}
+
+    if fonte == "DF":
+        result = collect_annual_task.delay(ano)
+    else:
+        if mes is None:
+            raise HTTPException(status_code=422, detail="Informe o mês (parâmetro 'mes').")
+        if fonte == "SENADO":
+            result = collect_senado_month_task.delay(ano, mes)
+        else:
+            result = collect_federal_month_task.delay(ano, mes, force)
+    return {"task_id": result.id, "status": "queued"}

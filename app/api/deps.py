@@ -17,6 +17,7 @@ from app.persistence.admin_repository import AdminRepository
 from app.persistence.models import UserSubscription
 from app.persistence.repositories import (
     ExecutionRepository,
+    FederalRepository,
     RemunerationRepository,
     SenadoRepository,
 )
@@ -30,6 +31,13 @@ security = HTTPBearer()
 def get_execution_repository(session: AsyncSession = Depends(get_session)) -> ExecutionRepository:
     """Dependency for ExecutionRepository."""
     return ExecutionRepository(session)
+
+
+def get_federal_repository(
+    session: AsyncSession = Depends(get_session),
+) -> FederalRepository:
+    """Dependency for FederalRepository."""
+    return FederalRepository(session)
 
 
 def get_senado_repository(

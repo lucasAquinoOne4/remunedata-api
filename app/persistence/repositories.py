@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.persistence.models import (
     ExecutionAnnual,
     ExecutionMonthly,
+    FederalRemuneracao,
     RemunerationCollected,
     SenadoRemuneracao,
 )
@@ -31,6 +32,41 @@ def _strip_accents(text: str) -> str:
     return "".join(
         ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
     )
+
+
+# Contagem de resultados limitada: contar milhões de linhas para um nome comum custa segundos.
+# Os repositórios devolvem no máximo COUNT_CAP + 1; o endpoint transforma em 'total_capped'.
+COUNT_CAP = 10_000
+
+# Quantas linhas candidatas a busca ordena em memória. Ordenar TODOS os resultados de um nome
+# comum ("silva" tem centenas de milhares) custa segundos; ordena-se só as primeiras candidatas
+# (a contagem já vira "10.000+" e o usuário refina a busca).
+CANDIDATE_CAP = 3000
+
+
+async def _ordered_page(session, model, name_col, ano_col, mes_col, where, limit, offset):
+    """Página ordenada por nome, restrita às primeiras CANDIDATE_CAP linhas que casam."""
+    base = select(model.id.label("id"), name_col.label("n"), ano_col.label("a"), mes_col.label("m"))
+    base = base.where(*where) if isinstance(where, (list, tuple)) else base.where(where)
+    cand = base.limit(CANDIDATE_CAP).subquery()
+    ids = (
+        (
+            await session.execute(
+                select(cand.c.id)
+                .order_by(cand.c.n, cand.c.a.desc(), cand.c.m.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not ids:
+        return []
+    found = {
+        r.id: r for r in (await session.execute(select(model).where(model.id.in_(ids)))).scalars()
+    }
+    return [found[i] for i in ids if i in found]
 
 
 _INSERT_CHUNK_ROWS = 500  # 500 x 36 colunas = 18 mil parâmetros (< 32767)
@@ -237,14 +273,23 @@ class RemunerationRepository:
                 func.unaccent(RemunerationCollected.nome_orgao).ilike(func.unaccent(f"%{orgao}%"))
             )
 
-        # Count total
-        total_result = await self.session.execute(count_stmt)
-        total = total_result.scalar_one()
+        # Count total (limitado: ver COUNT_CAP)
+        capped = stmt.with_only_columns(RemunerationCollected.id).limit(COUNT_CAP + 1).subquery()
+        total = (await self.session.execute(select(func.count()).select_from(capped))).scalar_one()
 
-        # Paginated results
-        stmt = stmt.order_by(RemunerationCollected.nome_servidor).limit(limit).offset(offset)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all()), total
+        # Página ordenada por nome (candidatas limitadas: ver CANDIDATE_CAP)
+        where = list(stmt._where_criteria)
+        rows = await _ordered_page(
+            self.session,
+            RemunerationCollected,
+            RemunerationCollected.nome_servidor,
+            RemunerationCollected.ano_exercicio,
+            RemunerationCollected.mes_referencia,
+            where,
+            limit,
+            offset,
+        )
+        return rows, total
 
     async def get_distinct_filters(self) -> dict[str, list[str]]:
         """Busca valores únicos de cargo e órgão para preencher selects no frontend."""
@@ -434,22 +479,19 @@ class SenadoRepository:
                 func.unaccent(SenadoRemuneracao.lotacao_nome).ilike(func.unaccent(f"%{orgao}%"))
             )
 
-        total = (
-            await self.session.execute(
-                select(func.count()).select_from(SenadoRemuneracao).where(*filters)
-            )
-        ).scalar_one()
+        capped = select(SenadoRemuneracao.id).where(*filters).limit(COUNT_CAP + 1).subquery()
+        total = (await self.session.execute(select(func.count()).select_from(capped))).scalar_one()
 
-        stmt = (
-            select(SenadoRemuneracao)
-            .where(*filters)
-            .order_by(
-                SenadoRemuneracao.nome, SenadoRemuneracao.ano.desc(), SenadoRemuneracao.mes.desc()
-            )
-            .limit(limit)
-            .offset(offset)
+        rows = await _ordered_page(
+            self.session,
+            SenadoRemuneracao,
+            SenadoRemuneracao.nome,
+            SenadoRemuneracao.ano,
+            SenadoRemuneracao.mes,
+            filters,
+            limit,
+            offset,
         )
-        rows = (await self.session.execute(stmt)).scalars().all()
         return [self.to_read(r) for r in rows], total
 
     async def get_distinct_filters(self) -> dict[str, list[str]]:
@@ -489,4 +531,129 @@ class SenadoRepository:
             "valor_bruto": r.valor_bruto,
             "valor_liquido": r.valor_liquido,
             "created_at": r.created_at,
+        }
+
+
+class FederalRepository:
+    """Repositório da remuneração de servidores civis do Executivo federal."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def month_loaded(self, ano: int, mes: int) -> bool:
+        """True se o mês já tem registros (a verificação semanal pula sem bater no portal)."""
+        found = await self.session.execute(
+            select(FederalRemuneracao.id)
+            .where(FederalRemuneracao.ano == ano, FederalRemuneracao.mes == mes)
+            .limit(1)
+        )
+        return found.first() is not None
+
+    async def replace_month(self, ano: int, mes: int, rows, chunk: int = 1000) -> int:
+        """Apaga o mês e insere `rows` (iterável de dicts) em lotes, numa única transação."""
+        await self.session.execute(
+            delete(FederalRemuneracao).where(
+                FederalRemuneracao.ano == ano, FederalRemuneracao.mes == mes
+            )
+        )
+        total, batch = 0, []
+        for row in rows:
+            batch.append(row)
+            if len(batch) >= chunk:
+                await self.session.execute(FederalRemuneracao.__table__.insert(), batch)
+                total += len(batch)
+                batch = []
+        if batch:
+            await self.session.execute(FederalRemuneracao.__table__.insert(), batch)
+            total += len(batch)
+        await self.session.commit()
+        return total
+
+    async def search(
+        self,
+        nome: Optional[str] = None,
+        ano: Optional[int] = None,
+        mes: Optional[str] = None,
+        cargo: Optional[str] = None,
+        orgao: Optional[str] = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Busca paginada no formato comum de RemunerationRead."""
+        filters = []
+        if nome:
+            filters.append(
+                func.immutable_unaccent(FederalRemuneracao.nome).ilike(
+                    _like_pattern(nome), escape="\\"
+                )
+            )
+        if ano:
+            filters.append(FederalRemuneracao.ano == ano)
+        if mes:
+            filters.append(FederalRemuneracao.mes == int(mes))
+        if cargo:
+            filters.append(FederalRemuneracao.cargo == cargo)
+        if orgao:
+            filters.append(FederalRemuneracao.org_exercicio == orgao)
+
+        capped = select(FederalRemuneracao.id).where(*filters).limit(COUNT_CAP + 1).subquery()
+        total = (await self.session.execute(select(func.count()).select_from(capped))).scalar_one()
+        rows = await _ordered_page(
+            self.session,
+            FederalRemuneracao,
+            FederalRemuneracao.nome,
+            FederalRemuneracao.ano,
+            FederalRemuneracao.mes,
+            filters,
+            limit,
+            offset,
+        )
+        return [self.to_read(r) for r in rows], total
+
+    async def get_distinct_filters(self) -> dict[str, list[str]]:
+        """Cargos e órgãos de exercício únicos (do mês mais recente carregado)."""
+        latest = (
+            await self.session.execute(
+                select(FederalRemuneracao.ano, FederalRemuneracao.mes)
+                .order_by(FederalRemuneracao.ano.desc(), FederalRemuneracao.mes.desc())
+                .limit(1)
+            )
+        ).first()
+        if latest is None:
+            return {"cargos": [], "orgaos": []}
+        scope = (FederalRemuneracao.ano == latest[0], FederalRemuneracao.mes == latest[1])
+        cargos = await self.session.execute(
+            select(FederalRemuneracao.cargo)
+            .where(*scope, FederalRemuneracao.cargo.isnot(None))
+            .distinct()
+            .order_by(FederalRemuneracao.cargo)
+        )
+        orgaos = await self.session.execute(
+            select(FederalRemuneracao.org_exercicio)
+            .where(*scope, FederalRemuneracao.org_exercicio.isnot(None))
+            .distinct()
+            .order_by(FederalRemuneracao.org_exercicio)
+        )
+        return {
+            "cargos": [str(c) for c in cargos.scalars().all() if c],
+            "orgaos": [str(o) for o in orgaos.scalars().all() if o],
+        }
+
+    @staticmethod
+    def to_read(r: FederalRemuneracao) -> dict:
+        return {
+            "id": r.id,
+            "fonte": "FEDERAL",
+            "ano_exercicio": r.ano,
+            "mes_referencia": f"{r.mes:02d}",
+            "codigo_identificacao": str(r.id_servidor_portal),
+            "codigo_matricula": r.matricula_mascarada or str(r.id_servidor_portal),
+            "nome_servidor": r.nome,
+            "cpf_servidor": r.cpf_mascarado,
+            "codigo_orgao": None,
+            "nome_orgao": r.org_exercicio or r.org_lotacao,
+            "cargo": r.cargo,
+            "valor_bruto": r.valor_bruto,
+            "valor_liquido": r.valor_liquido,
+            "created_at": None,
         }
