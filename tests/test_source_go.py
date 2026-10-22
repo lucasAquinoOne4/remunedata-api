@@ -10,9 +10,11 @@ import pytest
 import respx
 
 from app.sources import go
-from app.sources.go import ADAPTER, SEARCH_URL, PACKAGE_URL, GoSourceError, make_ident, _num
+from app.sources.go import ADAPTER, PACKAGE_URL, SEARCH_URL, GoSourceError, _num, make_ident
 
-CSV_URL = "https://dadosabertos.go.gov.br/dataset/x/resource/r-ago/download/folhapagamento_202608.csv"
+CSV_URL = (
+    "https://dadosabertos.go.gov.br/dataset/x/resource/r-ago/download/folhapagamento_202608.csv"
+)
 
 
 def package(ago_ds=True):
@@ -27,9 +29,13 @@ def package(ago_ds=True):
         "result": {
             "resources": [
                 res("dict", "Dicionário de Dados", "dicionario.pdf", False, "PDF"),
-                res("r-ago", "Folha de Pagamento - Agosto/2026", "folhapagamento_202608.csv", ago_ds),
+                res(
+                    "r-ago", "Folha de Pagamento - Agosto/2026", "folhapagamento_202608.csv", ago_ds
+                ),
                 res("r-jul", "Folha de Pagamento - Julho/2026", "folhapagamento_202607.csv"),
-                res("z25", "Folha de Pagamento - 2025", "folhapagamento_ano_2025.zip", False, "ZIP"),
+                res(
+                    "z25", "Folha de Pagamento - 2025", "folhapagamento_ano_2025.zip", False, "ZIP"
+                ),
             ]
         },
     }
@@ -47,7 +53,9 @@ def rec(i, nome="ANA FICTICIA", cod="309", **kw):
 
 
 def page(records, total):
-    return httpx.Response(200, json={"success": True, "result": {"records": records, "total": total}})
+    return httpx.Response(
+        200, json={"success": True, "result": {"records": records, "total": total}}
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -472,7 +472,9 @@ async def test_admin_status_e_disparo_de_carga(client, override_get_session):
     admin = settings.admin_path_prefix
     try:
         status = (await client.get(f"/api/v1/{admin}/loads")).json()
-        assert {f["fonte"] for f in status["fontes"]} == {"DF", "SENADO", "FEDERAL"}
+        assert {"DF", "SENADO", "FEDERAL"} <= {
+            f["fonte"] for f in status["fontes"]
+        }  # + estados com adaptador
         assert all("em_execucao" in f for f in status["fontes"])
 
         with patch("app.api.endpoints.admin.collect_federal_month_task") as task:

@@ -248,7 +248,9 @@ class PEAdapter:
     def iter_rows(self, ano: int, mes: int, work_dir: Path) -> Iterator[NormalRow]:
         work_dir.mkdir(parents=True, exist_ok=True)
         timeout = httpx.Timeout(60.0, read=600.0)
-        with httpx.Client(timeout=timeout, headers=self._headers(), follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=timeout, headers=self._headers(), follow_redirects=True
+        ) as client:
             resources = self._package_resources(client)
             plano = []
             for tipo, situacao in (("ativos", "ATIVO"), ("inativos", "INATIVO")):
@@ -256,7 +258,9 @@ class PEAdapter:
                 if res is None:
                     if tipo == "ativos":
                         raise RuntimeError(f"PE {mes:02d}/{ano}: recurso de ativos não publicado")
-                    logger.warning(f"PE {mes:02d}/{ano}: sem recurso de inativos; seguindo só com ativos.")
+                    logger.warning(
+                        f"PE {mes:02d}/{ano}: sem recurso de inativos; seguindo só com ativos."
+                    )
                     continue
                 plano.append((tipo, situacao, res["url"]))
             for tipo, situacao, url in plano:

@@ -136,7 +136,9 @@ class GoAdapter:
     nome = "Governo de Goiás"
 
     # ---------- HTTP ----------
-    def _request(self, client: httpx.Client, url: str, params: Optional[dict] = None) -> httpx.Response:
+    def _request(
+        self, client: httpx.Client, url: str, params: Optional[dict] = None
+    ) -> httpx.Response:
         last = "sem resposta"
         for attempt in range(MAX_ATTEMPTS):
             try:
@@ -160,7 +162,9 @@ class GoAdapter:
                 time.sleep(BACKOFF * (2**attempt))
         raise GoSourceError(f"GO: falha definitiva em {url} ({last})")
 
-    def _json(self, client: httpx.Client, url: str, params: Optional[dict] = None) -> Dict[str, Any]:
+    def _json(
+        self, client: httpx.Client, url: str, params: Optional[dict] = None
+    ) -> Dict[str, Any]:
         try:
             data = self._request(client, url, params).json()
         except ValueError as exc:

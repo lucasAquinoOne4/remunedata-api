@@ -205,7 +205,10 @@ def test_download_com_falha_tenta_de_novo(tmp_path):
     with respx.mock() as router:
         mock_package(router, resources)
         router.get(url__regex=r".*/resource/a/download/.*").mock(
-            side_effect=[httpx.Response(503), httpx.Response(200, content=csv_text(ATIVO_1).encode())]
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, content=csv_text(ATIVO_1).encode()),
+            ]
         )
         rows = list(pe.ADAPTER.iter_rows(2026, 8, tmp_path))
     assert len(rows) == 1
