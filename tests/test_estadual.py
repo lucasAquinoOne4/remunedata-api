@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.collector.estadual import EstadualCollector, _prepare
+from app.collector.estadual import EstadualCollector, LoadRejected, _prepare
 from app.persistence.repositories import EstadualRepository
 from app.services import people
 from app.sources import ADAPTERS
@@ -58,15 +58,17 @@ def estado_ce(monkeypatch):
 def test_prepare_normaliza_deduplica_e_descarta_linha_invalida():
     rows = [
         row("1", "  JOSE  "),
-        row("1", "  JOSE  "),  # cópia exata no mesmo mês
+        row("1", "  JOSE  "),  # linha idêntica no mesmo mês
         {"ident": "", "nome": "SEM ID"},  # inválida
         {"ident": "9", "nome": ""},  # inválida
         row("2", "MARIA", cargo=None),
     ]
     out = list(_prepare("CE", 2026, 8, iter(rows)))
-    assert [r["ident"] for r in out] == ["1", "2"]
+    # cópia exata é mantida (homônimos idênticos são pessoas distintas), com hash distinto
+    assert [r["ident"] for r in out] == ["1", "1", "2"]
+    assert len({r["linha_hash"] for r in out}) == 3
     assert out[0]["nome"] == "JOSE" and out[0]["uf"] == "CE" and len(out[0]["linha_hash"]) == 32
-    assert out[1]["cargo"] is None and out[0]["valor_bruto"] == 1000.0
+    assert out[2]["cargo"] is None and out[0]["valor_bruto"] == 1000.0
 
 
 @pytest.mark.asyncio
@@ -173,3 +175,28 @@ def test_registro_de_adaptadores_ignora_modulos_ausentes():
     assert isinstance(ADAPTERS, dict)
     with patch("app.sources.MODULES", ("nao_existe",)):
         assert load_adapters() == {}
+
+
+@pytest.mark.asyncio
+async def test_carga_vazia_nao_apaga_o_mes_existente(db_session):
+    repo = EstadualRepository(db_session, "CE")
+    await EstadualCollector(FakeAdapter({(2081, 5): [row("1", "ANA"), row("2", "BRUNO")]}), repo).collect_month(2081, 5)
+
+    with pytest.raises(LoadRejected):
+        await EstadualCollector(FakeAdapter({(2081, 5): []}), repo).collect_month(2081, 5, force=True)
+    assert await repo.month_count(2081, 5) == 2
+
+
+@pytest.mark.asyncio
+async def test_carga_truncada_e_rejeitada_a_menos_que_aceite_queda(db_session):
+    repo = EstadualRepository(db_session, "CE")
+    full = [row(str(i), f"PESSOA {i}") for i in range(10)]
+    await EstadualCollector(FakeAdapter({(2081, 6): full}), repo).collect_month(2081, 6)
+
+    short = EstadualCollector(FakeAdapter({(2081, 6): full[:3]}), repo)
+    with pytest.raises(LoadRejected):
+        await short.collect_month(2081, 6, force=True)
+    assert await repo.month_count(2081, 6) == 10
+
+    result = await short.collect_month(2081, 6, force=True, accept_shrink=True)
+    assert result["registros"] == 3 and await repo.month_count(2081, 6) == 3

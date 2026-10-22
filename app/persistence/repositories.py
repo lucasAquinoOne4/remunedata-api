@@ -747,8 +747,29 @@ class EstadualRepository:
         )
         return found.first() is not None
 
+    async def month_count(self, ano: int, mes: int) -> int:
+        return (
+            await self.session.execute(
+                select(func.count())
+                .select_from(EstadualRemuneracao)
+                .where(
+                    EstadualRemuneracao.uf == self.uf,
+                    EstadualRemuneracao.ano == ano,
+                    EstadualRemuneracao.mes == mes,
+                )
+            )
+        ).scalar_one()
+
     async def replace_month(self, ano: int, mes: int, rows, chunk: int = 1000) -> int:
-        """Apaga o mês do estado e insere `rows` (iterável de dicts) em lotes, numa transação."""
+        """Apaga o mês do estado e insere `rows` (iterável de dicts) em lotes, numa transação.
+        Qualquer falha desfaz tudo: o mês anterior permanece intacto."""
+        try:
+            return await self._replace_month(ano, mes, rows, chunk)
+        except BaseException:
+            await self.session.rollback()
+            raise
+
+    async def _replace_month(self, ano: int, mes: int, rows, chunk: int) -> int:
         await self.session.execute(
             delete(EstadualRemuneracao).where(
                 EstadualRemuneracao.uf == self.uf,

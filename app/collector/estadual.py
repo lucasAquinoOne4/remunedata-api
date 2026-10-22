@@ -7,6 +7,7 @@ requisição à fonte. As linhas do adaptador são normalizadas, deduplicadas po
 lotes numa única transação.
 """
 
+import asyncio
 import hashlib
 import json
 import tempfile
@@ -21,20 +22,28 @@ from app.sources.base import NormalRow, SourceAdapter, normalize_row
 logger = get_logger(__name__)
 
 _NUMERIC = ("valor_bruto", "valor_liquido", "valor_descontos")
+# Carga com menos que esta fração do mês anterior é tratada como truncada e NÃO substitui o mês.
+MIN_RATIO_VS_PREVIOUS = 0.7
+
+
+class LoadRejected(Exception):
+    """Carga descartada por parecer incompleta (vazia ou muito menor que a anterior); o mês antigo é mantido."""
 
 
 def _prepare(uf: str, ano: int, mes: int, rows: Iterator[NormalRow]) -> Iterator[Dict[str, Any]]:
     """Normaliza, completa e deduplica as linhas do adaptador para o INSERT."""
-    seen = set()
+    seen: Dict[str, int] = {}
     for raw in rows:
         row = normalize_row(raw)
         if row is None:
             continue
         payload = {k: row.get(k) for k in sorted(row)}
         digest = hashlib.md5(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-        if digest in seen:
-            continue
-        seen.add(digest)
+        # Linhas idênticas legítimas (homônimos com mesmo cargo/valor) ganham ordinal: não são descartadas.
+        ordinal = seen.get(digest, 0)
+        seen[digest] = ordinal + 1
+        if ordinal:
+            digest = hashlib.md5(f"{digest}#{ordinal}".encode()).hexdigest()
         out: Dict[str, Any] = {
             "uf": uf,
             "ano": ano,
@@ -58,11 +67,27 @@ def _prepare(uf: str, ano: int, mes: int, rows: Iterator[NormalRow]) -> Iterator
 class EstadualCollector:
     """Carrega um mês de um estado."""
 
+    def _spool(self, uf: str, ano: int, mes: int, work_dir: Path, spool: Path) -> int:
+        count = 0
+        with spool.open("w", encoding="utf-8") as fh:
+            for row in _prepare(uf, ano, mes, self.adapter.iter_rows(ano, mes, work_dir)):
+                fh.write(json.dumps(row, default=str) + "\n")
+                count += 1
+        return count
+
+    @staticmethod
+    def _read_spool(spool: Path) -> Iterator[Dict[str, Any]]:
+        with spool.open(encoding="utf-8") as fh:
+            for line in fh:
+                yield json.loads(line)
+
     def __init__(self, adapter: SourceAdapter, repo: EstadualRepository):
         self.adapter = adapter
         self.repo = repo
 
-    async def collect_month(self, ano: int, mes: int, force: bool = False) -> Dict[str, Any]:
+    async def collect_month(
+        self, ano: int, mes: int, force: bool = False, accept_shrink: bool = False
+    ) -> Dict[str, Any]:
         uf = self.adapter.uf
         base = {"uf": uf, "ano": ano, "mes": mes}
         if not force and await self.repo.month_loaded(ano, mes):
@@ -72,8 +97,19 @@ class EstadualCollector:
             return {**base, "registros": 0, "status": "empty"}
 
         with tempfile.TemporaryDirectory(prefix=f"{uf.lower()}-") as tmp:
-            rows = self.adapter.iter_rows(ano, mes, Path(tmp))
-            total = await self.repo.replace_month(ano, mes, _prepare(uf, ano, mes, rows))
+            spool = Path(tmp) / "spool.jsonl"
+            # Baixa/parseia e grava em disco FORA da transação e do event loop; o banco só é tocado
+            # depois, numa transação curta (a fonte pode levar horas, ex.: CE).
+            count = await asyncio.to_thread(self._spool, uf, ano, mes, Path(tmp), spool)
+            previous = await self.repo.month_count(ano, mes)
+            if count == 0:
+                raise LoadRejected(f"{uf} {mes:02d}/{ano}: fonte devolveu 0 linhas; mês anterior mantido.")
+            if previous and count < previous * MIN_RATIO_VS_PREVIOUS and not accept_shrink:
+                raise LoadRejected(
+                    f"{uf} {mes:02d}/{ano}: {count} linhas contra {previous} já gravadas "
+                    f"(< {int(MIN_RATIO_VS_PREVIOUS * 100)}%); mês mantido. Use accept_shrink para aceitar."
+                )
+            total = await self.repo.replace_month(ano, mes, self._read_spool(spool))
         try:
             await invalidate_period_stat(self.repo.session, uf, ano, mes)
         except Exception as exc:  # agregados e retrato são cache: nunca derrubam a carga

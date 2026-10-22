@@ -17,6 +17,7 @@ async_engine = create_async_engine(
     settings.database_url,
     echo=settings.is_development,
     future=True,
+    hide_parameters=True,  # erros não vazam valores (CPF/nomes) nos logs
     pool_pre_ping=True,
     # Aumentar pool para suportar cargas do coletor
     pool_size=10,
