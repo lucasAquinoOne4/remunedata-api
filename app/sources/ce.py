@@ -158,7 +158,9 @@ class CearaAdapter:
                     last_error = f"HTTP {resp.status_code}"
                     delay = _retry_after(resp)
                 else:
-                    raise CearaFetchError(f"CE {mes:02d}/{ano} página {page}: HTTP {resp.status_code}")
+                    raise CearaFetchError(
+                        f"CE {mes:02d}/{ano} página {page}: HTTP {resp.status_code}"
+                    )
             if attempt < MAX_ATTEMPTS:
                 pause = delay if delay is not None else min(2.0**attempt, 30.0)
                 logger.warning(f"CE página {page}: {last_error}; nova tentativa em {pause:.1f}s.")

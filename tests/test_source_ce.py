@@ -70,9 +70,13 @@ def test_paginacao_tres_paginas_e_normalizacao():
     assert [c.request.url.params["page"] for c in route.calls] == ["1", "2", "3"]
     assert route.calls[0].request.url.params["month"] == "8"
     r = out[1]
-    assert r["valor_bruto"] == 1000.0 and r["valor_liquido"] == 800.0 and r["valor_descontos"] == 200.0
+    assert (
+        r["valor_bruto"] == 1000.0 and r["valor_liquido"] == 800.0 and r["valor_descontos"] == 200.0
+    )
     assert r["detalhes"] == {"diarias": 50.5, "outros_descontos": 200.0}  # zeros omitidos
-    assert r["orgao"] == "SECRETARIA TESTE" and r["cargo"] == "ANALISTA" and r["situacao"] == "ATIVO"
+    assert (
+        r["orgao"] == "SECRETARIA TESTE" and r["cargo"] == "ANALISTA" and r["situacao"] == "ATIVO"
+    )
     assert "cpf_mascarado" not in r and "matricula" not in r
 
 
@@ -95,7 +99,8 @@ async def test_is_published_true_e_mes_sem_dados():
         200, json=page([rec("ANA TESTE")], 1, 1, 1)
     )
     respx.get(URL, params={"year": 2099, "month": 1, "page": 1}).respond(
-        200, json={"sumary": {"total_pages": 0, "current_page": "1", "total_records": 0}, "data": []}
+        200,
+        json={"sumary": {"total_pages": 0, "current_page": "1", "total_records": 0}, "data": []},
     )
     respx.get(URL, params={"year": 2098, "month": 1, "page": 1}).respond(500)
     adapter = CearaAdapter()
@@ -118,7 +123,9 @@ def test_campos_numericos_como_texto_e_numero():
     a, b = rows(CearaAdapter())
     assert a["valor_bruto"] == 1234.56 and a["valor_descontos"] == 12.5
     assert b["valor_bruto"] == 2500.5 and b["valor_liquido"] == 0.0 and b["valor_descontos"] == 0.0
-    assert parse_money("1234.56") == 1234.56 and parse_money("") == 0.0 and parse_money("nan") == 0.0
+    assert (
+        parse_money("1234.56") == 1234.56 and parse_money("") == 0.0 and parse_money("nan") == 0.0
+    )
 
 
 @respx.mock
@@ -166,7 +173,10 @@ def test_falha_definitiva_levanta_erro_em_vez_de_pular():
 @respx.mock
 def test_erro_de_rede_tambem_e_tentado_de_novo():
     route = respx.get(URL)
-    route.side_effect = [httpx.ConnectError("x"), httpx.Response(200, json=page([rec("ANA TESTE")]))]
+    route.side_effect = [
+        httpx.ConnectError("x"),
+        httpx.Response(200, json=page([rec("ANA TESTE")])),
+    ]
     assert len(rows(CearaAdapter())) == 1
 
 

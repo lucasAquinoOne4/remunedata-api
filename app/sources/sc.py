@@ -28,7 +28,7 @@ import re
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 

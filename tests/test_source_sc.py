@@ -90,7 +90,9 @@ async def test_is_published():
     with respx.mock() as router:
         # só inativos publicados: ainda não vale como publicado
         router.get(sc.PACKAGE_URL).mock(
-            return_value=httpx.Response(200, json=package([res("Servidores-Inativos-2026-09.csv", URL_I)]))
+            return_value=httpx.Response(
+                200, json=package([res("Servidores-Inativos-2026-09.csv", URL_I)])
+            )
         )
         assert await ADAPTER.is_published(2026, 9) is False
     with respx.mock() as router:
@@ -163,9 +165,15 @@ def test_colunas_localizadas_por_nome_normalizado(tmp_path):
     header = "NOME;cpf;CARGO;ÓRGÃO EXERCÍCIO;x;Regime Trabalho;a;b;situação;Valor Bruto"
     # 'ÓRGÃO EXERCÍCIO' normaliza para 'orgaoexercicio'; 'Valor Bruto' para 'valorbruto'
     with respx.mock() as router:
-        mock_site(router, csv_bytes(["ZE TESTE;***.1.2-**;C;ORG;u;CLT;;;ATIVO;5,5"], header=header), csv_bytes([]))
+        mock_site(
+            router,
+            csv_bytes(["ZE TESTE;***.1.2-**;C;ORG;u;CLT;;;ATIVO;5,5"], header=header),
+            csv_bytes([]),
+        )
         rows = list(ADAPTER.iter_rows(2026, 9, tmp_path))
-    assert rows[0]["orgao"] == "ORG" and rows[0]["valor_bruto"] == 5.5 and rows[0]["vinculo"] == "CLT"
+    assert (
+        rows[0]["orgao"] == "ORG" and rows[0]["valor_bruto"] == 5.5 and rows[0]["vinculo"] == "CLT"
+    )
 
 
 def test_mes_nao_publicado_levanta_erro(tmp_path):
