@@ -404,3 +404,23 @@ def sync_estadual_task():
     for uf, ano, mes in queued:
         collect_estadual_month_task.delay(uf, ano, mes)
     return {"status": "queued", "months": [f"{u}:{a}-{m:02d}" for u, a, m in queued]}
+
+
+@celery_app.task(name="refresh_economia_task")
+def refresh_economia_task():
+    """Atualiza IPCA, salário mínimo e Selic (IBGE SIDRA e BCB SGS): 3 requisições por execução."""
+    from app.services import economia
+
+    async def _run():
+        async with async_session_maker() as session:
+            count = await economia.refresh(session)
+        await cache.clear_prefix("remuneration:person")
+        return count
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()

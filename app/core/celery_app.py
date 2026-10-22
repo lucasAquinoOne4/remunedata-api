@@ -43,6 +43,11 @@ celery_app.conf.beat_schedule = {
         # Quinta 08:00 (a federal roda na quarta): estados publicam com atraso e mudam pouco
         "schedule": crontab(hour=8, minute=30, day_of_week="thu"),
     },
+    "refresh-economia-monthly": {
+        "task": "refresh_economia_task",
+        # Dia 12 às 07:30: o IPCA do mês anterior sai por volta do dia 10; os dados são agregados
+        "schedule": crontab(hour=7, minute=30, day_of_month="12"),
+    },
     "warm-portal-cache-daily": {
         "task": "warm_portal_cache_task",
         # 05:50: depois de a instância ligar (05:30) e antes do uso (o Redis não persiste)

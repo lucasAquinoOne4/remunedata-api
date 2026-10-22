@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 
 from sqlalchemy import (
     BigInteger,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -445,3 +446,31 @@ class EstadualRemuneracao(Base):
     valor_liquido: Mapped[float] = mapped_column(Float, default=0.0)
     valor_descontos: Mapped[float] = mapped_column(Float, default=0.0)
     detalhes: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+
+
+class IndiceEconomico(Base):
+    """
+    Série econômica mensal usada para dar contexto à remuneração: IPCA (índice e variação), salário
+    mínimo e Selic. Fontes: IBGE SIDRA e Banco Central (SGS). Ver ADR 0011.
+    """
+
+    __tablename__ = "indice_economico"
+
+    serie: Mapped[str] = mapped_column(String(30), primary_key=True)
+    ano: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mes: Mapped[int] = mapped_column(Integer, primary_key=True)
+    valor: Mapped[float] = mapped_column(Float, nullable=False)
+    atualizado_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class TetoConstitucional(Base):
+    """Subsídio de ministro do STF (teto remuneratório) por vigência, com a norma citada."""
+
+    __tablename__ = "teto_constitucional"
+
+    vigencia_inicio: Mapped[Any] = mapped_column(Date, primary_key=True)
+    valor: Mapped[float] = mapped_column(Float, nullable=False)
+    norma: Mapped[str] = mapped_column(String(200), nullable=False)
+    url_norma: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)

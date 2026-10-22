@@ -891,8 +891,26 @@ async def person(
             session, fonte, base["cargo"], ultimo["ano"], int(ultimo["mes"]), ultimo["valor_bruto"]
         )
     ident_data = base["identidade"]
+    contexto_base = None
+    try:
+        from app.services import economia
+
+        ctx = await economia.carregar_contexto(session)
+        for h in hist:
+            h["contexto"] = ctx.enriquecer(h["ano"], int(h["mes"]), h["valor_bruto"])
+        if ctx.referencia:
+            contexto_base = {
+                "referencia": f"{ctx.referencia[0]}-{ctx.referencia[1]:02d}",
+                "inflacao": "IPCA (IBGE, SIDRA 1737): valores em reais do mês de referência",
+                "salario_minimo": "Banco Central (SGS 1619)",
+                "teto": "Subsídio de ministro do STF (Lei 14.520/2023). Verbas indenizatórias podem "
+                "legitimamente exceder o teto: não indica irregularidade.",
+            }
+    except Exception:  # contexto é enriquecimento: nunca impede o perfil
+        pass
     return {
         "fonte": fonte,
+        "contexto_base": contexto_base,
         "id": base["id_out"],
         "identidade": ident_data,
         "historico": hist,
