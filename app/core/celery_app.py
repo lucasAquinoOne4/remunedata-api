@@ -38,6 +38,11 @@ celery_app.conf.beat_schedule = {
         # do dia 9-10 e os dados mudam pouco. Meses já carregados não geram requisição.
         "schedule": crontab(hour=8, minute=0, day_of_week="wed"),
     },
+    "sync-estadual-weekly": {
+        "task": "sync_estadual_task",
+        # Quinta 08:00 (a federal roda na quarta): estados publicam com atraso e mudam pouco
+        "schedule": crontab(hour=8, minute=30, day_of_week="thu"),
+    },
     "warm-portal-cache-daily": {
         "task": "warm_portal_cache_task",
         # 05:50: depois de a instância ligar (05:30) e antes do uso (o Redis não persiste)

@@ -20,6 +20,7 @@ from app.persistence.models import ExecutionAnnual
 from app.services import people
 from app.workers.tasks import (
     collect_annual_task,
+    collect_estadual_month_task,
     collect_federal_month_task,
     collect_senado_month_task,
 )
@@ -124,6 +125,7 @@ async def loads_status(
             rows = (
                 await session.execute(
                     select(s_.ano, s_.mes, func.count())
+                    .where(*s_.extra)
                     .group_by(s_.ano, s_.mes)
                     .order_by(s_.ano.desc(), s_.mes.desc())
                     .limit(36)
@@ -175,6 +177,7 @@ async def trigger_load(
     ano: int = Query(..., ge=2000, le=2100),
     mes: Optional[int] = Query(None, ge=1, le=12),
     force: bool = Query(False, description="Recarrega mesmo que o mês já esteja no banco"),
+    categoria: str = Query("CIVIL", pattern="^(CIVIL|MILITAR|BACEN)$", description="Só FEDERAL"),
     admin: dict = Depends(get_admin_user),
 ):
     """DF: coleta o ano inteiro | SENADO e FEDERAL: um mês (ano + mes)."""
@@ -191,6 +194,8 @@ async def trigger_load(
             raise HTTPException(status_code=422, detail="Informe o mês (parâmetro 'mes').")
         if fonte == "SENADO":
             result = collect_senado_month_task.delay(ano, mes)
+        elif fonte in people.STATE_SOURCES:
+            result = collect_estadual_month_task.delay(fonte, ano, mes, force)
         else:
-            result = collect_federal_month_task.delay(ano, mes, force)
+            result = collect_federal_month_task.delay(ano, mes, force, categoria)
     return {"task_id": result.id, "status": "queued"}

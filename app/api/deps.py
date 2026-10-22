@@ -16,6 +16,7 @@ from app.core.logging import get_logger
 from app.persistence.admin_repository import AdminRepository
 from app.persistence.models import UserSubscription
 from app.persistence.repositories import (
+    EstadualRepository,
     ExecutionRepository,
     FederalRepository,
     RemunerationRepository,
@@ -112,3 +113,8 @@ async def require_active_subscription(
             detail="Assinatura ativa necessÃ¡ria para acessar este recurso. Assine em /planos.",
         )
     return user
+
+
+def get_estadual_repository_factory(session: AsyncSession = Depends(get_session)):
+    """Fábrica de EstadualRepository por UF (a UF vem do parâmetro ?fonte=)."""
+    return lambda uf: EstadualRepository(session, uf)

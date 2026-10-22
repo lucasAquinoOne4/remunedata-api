@@ -16,6 +16,7 @@ from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    get_estadual_repository_factory,
     get_federal_repository,
     get_remuneration_repository,
     get_senado_repository,
@@ -34,7 +35,7 @@ from app.persistence.repositories import (
 from app.services import people
 from app.services.people import norm_name
 
-Fonte = Literal["DF", "SENADO", "FEDERAL"]
+Fonte = Literal["DF", "SENADO", "FEDERAL", "CE", "PE", "GO", "SC"]
 
 router = APIRouter()
 
@@ -57,8 +58,10 @@ async def _snapshots(session: AsyncSession, cache: RedisCache) -> dict:
     return data
 
 
-def _repo_for(fonte: str, df, senado, federal):
-    return {"DF": df, "SENADO": senado, "FEDERAL": federal}[fonte]
+def _repo_for(fonte: str, df, senado, federal, estadual=None):
+    if fonte in ("DF", "SENADO", "FEDERAL"):
+        return {"DF": df, "SENADO": senado, "FEDERAL": federal}[fonte]
+    return estadual(fonte)
 
 
 @router.get(
@@ -81,6 +84,7 @@ async def search_remuneration(
     repo: RemunerationRepository = Depends(get_remuneration_repository),
     senado_repo: SenadoRepository = Depends(get_senado_repository),
     federal_repo: FederalRepository = Depends(get_federal_repository),
+    estadual=Depends(get_estadual_repository_factory),
     session: AsyncSession = Depends(get_session),
     cache: RedisCache = Depends(get_cache),
     user: dict = Depends(require_active_subscription),
@@ -130,7 +134,7 @@ async def search_remuneration(
             offset=offset,
         )
     else:
-        target = _repo_for(fonte, repo, senado_repo, federal_repo)
+        target = _repo_for(fonte, repo, senado_repo, federal_repo, estadual)
         items, total = await target.search(
             nome=nome, ano=ano, mes=mes, cargo=cargo, orgao=orgao, limit=size, offset=offset
         )
@@ -178,6 +182,7 @@ async def export_search(
     repo: RemunerationRepository = Depends(get_remuneration_repository),
     senado_repo: SenadoRepository = Depends(get_senado_repository),
     federal_repo: FederalRepository = Depends(get_federal_repository),
+    estadual=Depends(get_estadual_repository_factory),
     user: dict = Depends(require_active_subscription),
 ):
     """
@@ -207,7 +212,7 @@ async def export_search(
             for r in raw
         ]
     else:
-        items, _ = await _repo_for(fonte, repo, senado_repo, federal_repo).search(
+        items, _ = await _repo_for(fonte, repo, senado_repo, federal_repo, estadual).search(
             nome=nome, ano=ano, mes=mes, cargo=cargo, orgao=orgao, limit=limit, offset=0
         )
     frame = pd.DataFrame(
@@ -239,6 +244,7 @@ async def get_distinct_filters(
     repo: RemunerationRepository = Depends(get_remuneration_repository),
     senado_repo: SenadoRepository = Depends(get_senado_repository),
     federal_repo: FederalRepository = Depends(get_federal_repository),
+    estadual=Depends(get_estadual_repository_factory),
     cache: RedisCache = Depends(get_cache),
 ):
     """Retorna listas únicas de cargos e órgãos para preencher os selects do frontend."""
@@ -251,7 +257,7 @@ async def get_distinct_filters(
     if cached:
         return cached
 
-    data = await _repo_for(fonte, repo, senado_repo, federal_repo).get_distinct_filters()
+    data = await _repo_for(fonte, repo, senado_repo, federal_repo, estadual).get_distinct_filters()
 
     # Cache de 24 horas (valores mudam pouco)
     await cache.set(cache_key, data, ttl=86400)

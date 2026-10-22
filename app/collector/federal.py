@@ -129,7 +129,9 @@ def build_cadastro_db(zf: zipfile.ZipFile, db_path: Path) -> int:
     return total
 
 
-def iter_records(zip_path: Path, ano: int, mes: int, work_dir: Path) -> Iterator[Dict[str, Any]]:
+def iter_records(
+    zip_path: Path, ano: int, mes: int, work_dir: Path, categoria: str = "CIVIL"
+) -> Iterator[Dict[str, Any]]:
     """Gera os registros do mês (Remuneracao + Cadastro) como dicts prontos para INSERT."""
     with zipfile.ZipFile(zip_path) as zf:
         db_path = work_dir / "cadastro.sqlite"
@@ -169,6 +171,7 @@ def iter_records(zip_path: Path, ano: int, mes: int, work_dir: Path) -> Iterator
                 )
                 yield {
                     "id_servidor_portal": int(sid),
+                    "categoria": categoria,
                     "ano": ano,
                     "mes": mes,
                     "nome": (_cell(row, nome_pos) or (cad["nome"] if cad else "") or "").strip(),
@@ -211,27 +214,34 @@ class FederalCollector:
         self.client = client
         self.repo = repo
 
-    async def collect_month(self, ano: int, mes: int, force: bool = False) -> Dict[str, Any]:
+    async def collect_month(
+        self, ano: int, mes: int, force: bool = False, categoria: str = "CIVIL"
+    ) -> Dict[str, Any]:
+        base = {"ano": ano, "mes": mes, "categoria": categoria}
         # 1) Já carregado: nenhuma requisição ao portal
-        if not force and await self.repo.month_loaded(ano, mes):
-            return {"ano": ano, "mes": mes, "registros": 0, "status": "already_loaded"}
+        if not force and await self.repo.month_loaded(ano, mes, categoria):
+            return {**base, "registros": 0, "status": "already_loaded"}
 
         # 2) Publicado? (um HEAD)
-        if not await self.client.is_published(ano, mes):
-            logger.info(f"Federal {mes:02d}/{ano}: ainda não publicado.")
-            return {"ano": ano, "mes": mes, "registros": 0, "status": "empty"}
+        if not await self.client.is_published(ano, mes, categoria):
+            logger.info(f"Federal {categoria} {mes:02d}/{ano}: ainda não publicado.")
+            return {**base, "registros": 0, "status": "empty"}
 
         # 3) Um download; junta Cadastro x Remuneracao em SQLite temporário e grava em lotes
         with tempfile.TemporaryDirectory(prefix="federal-") as tmp:
             work = Path(tmp)
             zip_path = work / "servidores.zip"
-            await self.client.download(ano, mes, zip_path)
+            await self.client.download(ano, mes, zip_path, categoria)
             total = await self.repo.replace_month(
-                ano, mes, iter_records(zip_path, ano, mes, work), chunk=CHUNK
+                ano,
+                mes,
+                iter_records(zip_path, ano, mes, work, categoria),
+                chunk=CHUNK,
+                categoria=categoria,
             )
         try:
             await invalidate_period_stat(self.repo.session, "FEDERAL", ano, mes)
         except Exception as exc:  # agregados e retrato são cache: nunca derrubam a carga
             logger.warning(f"Não foi possível atualizar agregados de {mes:02d}/{ano}: {exc}")
-        logger.info(f"Federal {mes:02d}/{ano}: {total} registros gravados.")
-        return {"ano": ano, "mes": mes, "registros": total, "status": "success"}
+        logger.info(f"Federal {categoria} {mes:02d}/{ano}: {total} registros gravados.")
+        return {**base, "registros": total, "status": "success"}

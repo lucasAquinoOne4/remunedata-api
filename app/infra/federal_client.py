@@ -20,6 +20,14 @@ logger = get_logger(__name__)
 _MIN_ZIP_BYTES = 1_000_000  # um ZIP real tem dezenas de MB; abaixo disso é página de erro
 
 
+# categoria -> sufixo do arquivo mensal no portal
+DATASETS = {
+    "CIVIL": "Servidores_SIAPE",
+    "MILITAR": "Militares",
+    "BACEN": "Servidores_BACEN",
+}
+
+
 class FederalDownloadClient:
     """Cliente do download em lote do Portal da Transparência federal."""
 
@@ -28,8 +36,8 @@ class FederalDownloadClient:
         self.timeout = timeout
         self.headers = {"User-Agent": "Mozilla/5.0 (RemuneData)", "Accept": "*/*"}
 
-    def url(self, ano: int, mes: int) -> str:
-        return f"{self.base_url}/{ano}{mes:02d}_Servidores_SIAPE"
+    def url(self, ano: int, mes: int, categoria: str = "CIVIL") -> str:
+        return f"{self.base_url}/{ano}{mes:02d}_{DATASETS[categoria]}"
 
     @staticmethod
     def _is_zip(response: httpx.Response) -> bool:
@@ -37,7 +45,7 @@ class FederalDownloadClient:
         size = int(response.headers.get("content-length", "0") or 0)
         return response.status_code == 200 and "zip" in ctype and size >= _MIN_ZIP_BYTES
 
-    async def is_published(self, ano: int, mes: int) -> bool:
+    async def is_published(self, ano: int, mes: int, categoria: str = "CIVIL") -> bool:
         """
         O mês publicado devolve 200 com o ZIP; o não publicado devolve 302 e depois 403 (XML).
         Uma requisição HEAD, sem baixar nada.
@@ -45,27 +53,29 @@ class FederalDownloadClient:
         async with httpx.AsyncClient(
             timeout=60, headers=self.headers, follow_redirects=True
         ) as client:
-            response = await client.head(self.url(ano, mes))
+            response = await client.head(self.url(ano, mes, categoria))
         return self._is_zip(response)
 
-    async def download(self, ano: int, mes: int, destination: Path) -> int:
+    async def download(
+        self, ano: int, mes: int, destination: Path, categoria: str = "CIVIL"
+    ) -> int:
         """Baixa o ZIP do mês em streaming para `destination`. Devolve os bytes gravados."""
         written = 0
         async with httpx.AsyncClient(
             timeout=self.timeout, headers=self.headers, follow_redirects=True
         ) as client:
-            async with client.stream("GET", self.url(ano, mes)) as response:
+            async with client.stream("GET", self.url(ano, mes, categoria)) as response:
                 if (
                     response.status_code != 200
                     or "zip" not in response.headers.get("content-type", "").lower()
                 ):
                     raise RuntimeError(
-                        f"Download federal {mes:02d}/{ano} indisponível "
+                        f"Download federal {categoria} {mes:02d}/{ano} indisponível "
                         f"(HTTP {response.status_code}, {response.headers.get('content-type')})"
                     )
                 with destination.open("wb") as fh:
                     async for chunk in response.aiter_bytes(1024 * 1024):
                         fh.write(chunk)
                         written += len(chunk)
-        logger.info(f"Federal {mes:02d}/{ano}: ZIP baixado ({written / 1e6:.1f} MB).")
+        logger.info(f"Federal {categoria} {mes:02d}/{ano}: ZIP baixado ({written / 1e6:.1f} MB).")
         return written

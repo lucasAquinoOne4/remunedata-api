@@ -115,6 +115,12 @@ class Settings(BaseSettings):
             "A carga em lote por ZIP não usa chave; reservada para enriquecer detalhes via API."
         ),
     )
+    estadual_sync_months: int = Field(
+        default=2,
+        description="Quantos meses recentes publicados a verificação semanal de cada estado garante",
+        ge=1,
+        le=12,
+    )
     federal_sync_months: int = Field(
         default=2,
         description="Quantos meses recentes a verificação semanal do Executivo federal considera",

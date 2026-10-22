@@ -220,7 +220,7 @@ async def test_collector_federal_carrega_zip_e_e_idempotente(db_session, tmp_pat
     zip_path = tmp_path / "src.zip"
     make_zip(zip_path, ano=2090, mes=3)
 
-    async def fake_download(ano, mes, dest):
+    async def fake_download(ano, mes, dest, categoria="CIVIL"):
         dest.write_bytes(zip_path.read_bytes())
         return 1
 
@@ -230,7 +230,13 @@ async def test_collector_federal_carrega_zip_e_e_idempotente(db_session, tmp_pat
     collector = FederalCollector(client, FederalRepository(db_session))
 
     first = await collector.collect_month(2090, 3)
-    assert first == {"ano": 2090, "mes": 3, "registros": 3, "status": "success"}
+    assert first == {
+        "ano": 2090,
+        "mes": 3,
+        "categoria": "CIVIL",
+        "registros": 3,
+        "status": "success",
+    }
     # força: substitui sem duplicar
     again = await collector.collect_month(2090, 3, force=True)
     assert again["registros"] == 3
@@ -540,18 +546,18 @@ def test_sync_federal_enfileira_so_meses_publicados_e_nao_carregados(monkeypatch
     from app.workers import tasks
 
     publicados = {(2026, 8), (2026, 7)}
-    carregados = {(2026, 7)}  # julho já está no banco: não gera requisição nem tarefa
+    carregados = {(2026, 7, "CIVIL")}  # julho já está no banco: não gera requisição nem tarefa
 
     class FakeRepo:
         def __init__(self, session):
             pass
 
-        async def month_loaded(self, ano, mes):
-            return (ano, mes) in carregados
+        async def month_loaded(self, ano, mes, categoria="CIVIL"):
+            return (ano, mes, categoria) in carregados
 
     class FakeClient:
-        async def is_published(self, ano, mes):
-            return (ano, mes) in publicados
+        async def is_published(self, ano, mes, categoria="CIVIL"):
+            return categoria == "CIVIL" and (ano, mes) in publicados
 
     class FakeSession:
         async def __aenter__(self):
@@ -570,12 +576,14 @@ def test_sync_federal_enfileira_so_meses_publicados_e_nao_carregados(monkeypatch
         lambda n: [(2026, 10), (2026, 9), (2026, 8), (2026, 7), (2026, 6)][:n],
     )
     monkeypatch.setattr(
-        tasks.collect_federal_month_task, "delay", lambda a, m: enfileirados.append((a, m))
+        tasks.collect_federal_month_task,
+        "delay",
+        lambda a, m, f=False, c="CIVIL": enfileirados.append((a, m, c)),
     )
 
     result = tasks.sync_federal_task()
-    assert enfileirados == [(2026, 8)]
-    assert result["months"] == ["2026-08"]
+    assert enfileirados == [(2026, 8, "CIVIL")]
+    assert result["months"] == ["2026-08:CIVIL"]
 
 
 @pytest.mark.asyncio
@@ -628,3 +636,30 @@ async def test_person_latest_uma_linha_por_pessoa_e_busca_rapida(
     assert await people.refresh_person_latest(db_session, "FEDERAL") == 1
     count = (await db_session.execute(select(func.count()).select_from(PersonLatest))).scalar_one()
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_federal_categorias_sao_independentes(db_session):
+    """Civil, Militar e Banco Central do mesmo mês convivem; recarregar uma não apaga as outras."""
+    repo = FederalRepository(db_session)
+
+    def row(i, cat):
+        return {"id_servidor_portal": i, "categoria": cat, "ano": 2082, "mes": 3, "nome": f"N{i}"}
+
+    await repo.replace_month(2082, 3, iter([row(1, "CIVIL"), row(2, "CIVIL")]), categoria="CIVIL")
+    await repo.replace_month(2082, 3, iter([row(3, "MILITAR")]), categoria="MILITAR")
+    assert await repo.month_loaded(2082, 3, "CIVIL") and await repo.month_loaded(2082, 3, "MILITAR")
+    assert not await repo.month_loaded(2082, 3, "BACEN")
+
+    await repo.replace_month(2082, 3, iter([row(4, "MILITAR")]), categoria="MILITAR")  # recarga
+    _, total = await repo.search(ano=2082, mes="3", limit=10, offset=0)
+    assert total == 3  # 2 civis intactos + 1 militar substituído
+
+
+def test_urls_por_categoria():
+    from app.infra.federal_client import FederalDownloadClient
+
+    c = FederalDownloadClient()
+    assert c.url(2026, 8).endswith("/202608_Servidores_SIAPE")
+    assert c.url(2026, 8, "MILITAR").endswith("/202608_Militares")
+    assert c.url(2026, 8, "BACEN").endswith("/202608_Servidores_BACEN")

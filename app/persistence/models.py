@@ -5,7 +5,7 @@ Baseado em /docs/13-modelo-minimo-de-persistencia.md.
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -320,13 +321,17 @@ class FederalRemuneracao(Base):
 
     __tablename__ = "federal_remuneracao"
     __table_args__ = (
-        UniqueConstraint("id_servidor_portal", "ano", "mes", name="uq_federal_rem_periodo"),
+        UniqueConstraint(
+            "id_servidor_portal", "ano", "mes", "categoria", name="uq_federal_rem_periodo_cat"
+        ),
         Index("ix_federal_rem_ano_mes", "ano", "mes"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
 
     id_servidor_portal: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    # CIVIL (SIAPE), MILITAR (Forças Armadas) ou BACEN (Banco Central)
+    categoria: Mapped[str] = mapped_column(String(10), nullable=False, default="CIVIL")
     ano: Mapped[int] = mapped_column(Integer, nullable=False)
     mes: Mapped[int] = mapped_column(Integer, nullable=False)
     nome: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -407,3 +412,36 @@ class PersonLatest(Base):
     mes: Mapped[int] = mapped_column(Integer, nullable=False)
     valor_bruto: Mapped[float] = mapped_column(Float, default=0.0)
     valor_liquido: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class EstadualRemuneracao(Base):
+    """
+    Remuneração mensal de servidores de ESTADOS (CE, PE, GO, SC, ...), normalizada por um adaptador
+    de fonte (app/sources). Uma tabela para todos os estados, separada por `uf`.
+    """
+
+    __tablename__ = "estadual_remuneracao"
+    __table_args__ = (
+        UniqueConstraint("uf", "ano", "mes", "linha_hash", name="uq_estadual_rem_linha"),
+        Index("ix_estadual_rem_uf_ano_mes", "uf", "ano", "mes"),
+        Index("ix_estadual_rem_uf_ident", "uf", "ident"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    uf: Mapped[str] = mapped_column(String(2), nullable=False)
+    ano: Mapped[int] = mapped_column(Integer, nullable=False)
+    mes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # md5 da linha normalizada: descarta cópias exatas e permite recarregar sem duplicar
+    linha_hash: Mapped[str] = mapped_column(String(32), nullable=False)
+    ident: Mapped[str] = mapped_column(String(40), nullable=False)
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    cpf_mascarado: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    matricula: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    cargo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    orgao: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    situacao: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    vinculo: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    valor_bruto: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_liquido: Mapped[float] = mapped_column(Float, default=0.0)
+    valor_descontos: Mapped[float] = mapped_column(Float, default=0.0)
+    detalhes: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)

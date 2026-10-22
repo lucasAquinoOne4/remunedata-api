@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.persistence.models import (
+    EstadualRemuneracao,
     ExecutionAnnual,
     ExecutionMonthly,
     FederalRemuneracao,
@@ -28,8 +29,11 @@ from app.persistence.models import (
     RemunerationCollected,
     SenadoRemuneracao,
 )
+from app.sources import ADAPTERS  # noqa: E402
 
-SOURCES = ("DF", "SENADO", "FEDERAL")
+BASE_SOURCES = ("DF", "SENADO", "FEDERAL")
+STATE_SOURCES: tuple = ()  # estados com adaptador entregue (CE, PE, GO, SC, ...)
+SOURCES: tuple = BASE_SOURCES
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,7 @@ class Spec:
     bruto: Any
     liquido: Any
     ident: Any
+    extra: tuple = ()  # predicados fixos (ex.: uf == 'CE' na tabela única de estados)
 
 
 SPECS: Dict[str, Spec] = {
@@ -86,6 +91,24 @@ SPECS: Dict[str, Spec] = {
         FederalRemuneracao.id_servidor_portal,
     ),
 }
+
+
+def register_state(uf: str) -> None:
+    """Registra um estado (spec de consulta + lista de fontes). Idempotente."""
+    global STATE_SOURCES, SOURCES
+    uf = uf.upper()
+    e = EstadualRemuneracao
+    SPECS[uf] = Spec(
+        uf, e, e.ano, e.mes, e.nome, e.cargo, e.orgao, e.valor_bruto, e.valor_liquido, e.ident,
+        (e.uf == uf,),
+    )  # fmt: skip
+    if uf not in STATE_SOURCES:
+        STATE_SOURCES = tuple(sorted((*STATE_SOURCES, uf)))
+        SOURCES = BASE_SOURCES + STATE_SOURCES
+
+
+for _uf in ADAPTERS:
+    register_state(_uf)
 
 # Faixas (R$) do histograma de remuneração bruta
 _FAIXAS = [
@@ -143,7 +166,11 @@ async def periods(session: AsyncSession, fonte: str, limit: int = 36) -> List[di
         return [{"ano": int(a), "mes": f"{int(m):02d}"} for a, m in rows.all()]
     s = SPECS[fonte]
     rows = await session.execute(
-        select(s.ano, s.mes).distinct().order_by(s.ano.desc(), s.mes.desc()).limit(limit)
+        select(s.ano, s.mes)
+        .where(*s.extra)
+        .distinct()
+        .order_by(s.ano.desc(), s.mes.desc())
+        .limit(limit)
     )
     return [{"ano": int(a), "mes": f"{int(m):02d}"} for a, m in rows.all()]
 
@@ -179,7 +206,7 @@ async def _monthly_series(session: AsyncSession, fonte: str, s: Spec, ano: Optio
             cnt, avg, tot = (
                 await session.execute(
                     select(func.count(), func.avg(s.bruto), func.sum(s.bruto)).where(
-                        s.ano == a_, s.mes == m_
+                        s.ano == a_, s.mes == m_, *s.extra
                     )
                 )
             ).one()
@@ -252,7 +279,7 @@ async def stats(session: AsyncSession, fonte: str, ano: Optional[int]) -> dict:
         orgao_col = orgao
     else:
         t, bruto, orgao_col = s.model, s.bruto, s.orgao
-        atual = (s.ano == l_ano, s.mes == l_mes)
+        atual = (s.ano == l_ano, s.mes == l_mes, *s.extra)
     buckets = [
         func.count().filter((bruto >= lo) & ((bruto < hi) if hi is not None else True))
         for lo, hi, _ in _FAIXAS
@@ -396,6 +423,26 @@ async def refresh_person_latest(session: AsyncSession, fonte: str) -> int:
             )  # fmt: skip
             .where(m.ano == ano, m.mes == mes)
             .group_by(m.sequencial)
+        )
+    elif fonte in STATE_SOURCES:
+        m = EstadualRemuneracao
+        sel = (
+            select(
+                literal(fonte),
+                m.ident,
+                m.matricula,
+                m.nome,
+                m.cargo,
+                m.orgao,
+                m.cpf_mascarado,
+                literal(ano),
+                literal(mes),
+                m.valor_bruto,
+                m.valor_liquido,
+            )  # fmt: skip
+            .where(m.uf == fonte, m.ano == ano, m.mes == mes)
+            .distinct(m.ident)
+            .order_by(m.ident, m.id)
         )
     else:
         m = FederalRemuneracao
@@ -629,7 +676,10 @@ async def _federal_person(session: AsyncSession, ident: str) -> Optional[dict]:
             "regime": last.regime_juridico,
             "jornada": last.jornada,
             "uf": last.uf_exercicio,
-            "tipo": "Servidor civil do Executivo federal",
+            "tipo": {
+                "MILITAR": "Militar das Forças Armadas",
+                "BACEN": "Servidor do Banco Central",
+            }.get(last.categoria, "Servidor civil do Executivo federal"),
         },
         "historico": [
             _hist_item(
@@ -639,6 +689,63 @@ async def _federal_person(session: AsyncSession, ident: str) -> Optional[dict]:
         ],
         "cargo": last.cargo,
         "id_out": str(pid),
+    }
+
+
+async def _estadual_person(session: AsyncSession, uf: str, ident: str) -> Optional[dict]:
+    m = EstadualRemuneracao
+    rows = (
+        (
+            await session.execute(
+                select(m)
+                .where(m.uf == uf, m.ident == ident)
+                .order_by(m.ano, m.mes, m.id)
+                .limit(480)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None
+    # uma linha por competência (soma vínculos do mesmo mês)
+    by_period: Dict[tuple, dict] = {}
+    for r in rows:
+        comps = {
+            k: float(v) for k, v in (r.detalhes or {}).items() if isinstance(v, (int, float)) and v
+        }
+        if r.valor_descontos:
+            comps["valor_descontos"] = -abs(float(r.valor_descontos))
+        key = (r.ano, r.mes)
+        if key not in by_period:
+            by_period[key] = _hist_item(r.ano, r.mes, r.valor_bruto, r.valor_liquido, comps)
+        else:
+            cur = by_period[key]
+            cur["valor_bruto"] += float(r.valor_bruto or 0)
+            cur["valor_liquido"] += float(r.valor_liquido or 0)
+            for k, v in comps.items():
+                cur["componentes"][k] = cur["componentes"].get(k, 0.0) + v
+    last = rows[-1]
+    return {
+        "identidade": {
+            "nome": last.nome.strip(),
+            "cpf_mascarado": last.cpf_mascarado,
+            "matricula": last.matricula,
+            "cargo": last.cargo,
+            "funcao": None,
+            "orgao": last.orgao,
+            "lotacao": None,
+            "orgao_superior": None,
+            "situacao": last.situacao,
+            "vinculo": last.vinculo,
+            "regime": None,
+            "jornada": None,
+            "uf": uf,
+            "tipo": f"Servidor estadual ({uf})",
+        },
+        "historico": [by_period[k] for k in sorted(by_period)],
+        "cargo": last.cargo,
+        "id_out": str(ident),
     }
 
 
@@ -657,7 +764,7 @@ async def peers(
                 func.percentile_cont(0.5).within_group(s.bruto),
                 func.percentile_cont(0.9).within_group(s.bruto),
                 func.count().filter(s.bruto <= valor),
-            ).where(s.ano == ano, s.mes == mes, s.cargo == cargo)
+            ).where(s.ano == ano, s.mes == mes, s.cargo == cargo, *s.extra)
         )
     ).one()
     n = int(row[0] or 0)
@@ -712,7 +819,7 @@ async def other_sources(
         for row in rows:
             if norm_name(row[1]) != wanted:
                 continue
-            theirs = cpf_core(row[7]) if other in ("DF", "FEDERAL") else None
+            theirs = cpf_core(row[7]) if other != "SENADO" else None
             if mine and theirs and mine != theirs:
                 continue  # CPFs centrais diferentes: pessoas diferentes
             strong = bool(mine and theirs and mine == theirs)
@@ -770,6 +877,8 @@ async def person(
         base = await _df_person(session, ident, matricula)
     elif fonte == "SENADO":
         base = await _senado_person(session, ident)
+    elif fonte in STATE_SOURCES:
+        base = await _estadual_person(session, fonte, ident)
     else:
         base = await _federal_person(session, ident)
     if base is None:

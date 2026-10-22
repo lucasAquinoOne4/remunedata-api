@@ -9,6 +9,7 @@ from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.models import (
+    EstadualRemuneracao,
     ExecutionAnnual,
     ExecutionMonthly,
     FederalRemuneracao,
@@ -541,20 +542,28 @@ class FederalRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def month_loaded(self, ano: int, mes: int) -> bool:
+    async def month_loaded(self, ano: int, mes: int, categoria: str = "CIVIL") -> bool:
         """True se o mês já tem registros (a verificação semanal pula sem bater no portal)."""
         found = await self.session.execute(
             select(FederalRemuneracao.id)
-            .where(FederalRemuneracao.ano == ano, FederalRemuneracao.mes == mes)
+            .where(
+                FederalRemuneracao.ano == ano,
+                FederalRemuneracao.mes == mes,
+                FederalRemuneracao.categoria == categoria,
+            )
             .limit(1)
         )
         return found.first() is not None
 
-    async def replace_month(self, ano: int, mes: int, rows, chunk: int = 1000) -> int:
-        """Apaga o mês e insere `rows` (iterável de dicts) em lotes, numa única transação."""
+    async def replace_month(
+        self, ano: int, mes: int, rows, chunk: int = 1000, categoria: str = "CIVIL"
+    ) -> int:
+        """Apaga o mês (da categoria) e insere `rows` em lotes, numa única transação."""
         await self.session.execute(
             delete(FederalRemuneracao).where(
-                FederalRemuneracao.ano == ano, FederalRemuneracao.mes == mes
+                FederalRemuneracao.ano == ano,
+                FederalRemuneracao.mes == mes,
+                FederalRemuneracao.categoria == categoria,
             )
         )
         total, batch = 0, []
@@ -710,6 +719,117 @@ class PersonLatestRepository:
             "codigo_matricula": r.matricula or r.ident,
             "nome_servidor": r.nome,
             "cpf_servidor": r.cpf,
+            "codigo_orgao": None,
+            "nome_orgao": r.orgao,
+            "cargo": r.cargo,
+            "valor_bruto": r.valor_bruto,
+            "valor_liquido": r.valor_liquido,
+            "created_at": None,
+        }
+
+
+class EstadualRepository:
+    """Remuneração de servidores de um ESTADO (tabela única `estadual_remuneracao`, filtrada por uf)."""
+
+    def __init__(self, session: AsyncSession, uf: str):
+        self.session = session
+        self.uf = uf.upper()
+
+    async def month_loaded(self, ano: int, mes: int) -> bool:
+        found = await self.session.execute(
+            select(EstadualRemuneracao.id)
+            .where(
+                EstadualRemuneracao.uf == self.uf,
+                EstadualRemuneracao.ano == ano,
+                EstadualRemuneracao.mes == mes,
+            )
+            .limit(1)
+        )
+        return found.first() is not None
+
+    async def replace_month(self, ano: int, mes: int, rows, chunk: int = 1000) -> int:
+        """Apaga o mês do estado e insere `rows` (iterável de dicts) em lotes, numa transação."""
+        await self.session.execute(
+            delete(EstadualRemuneracao).where(
+                EstadualRemuneracao.uf == self.uf,
+                EstadualRemuneracao.ano == ano,
+                EstadualRemuneracao.mes == mes,
+            )
+        )
+        total, batch = 0, []
+        for row in rows:
+            batch.append(row)
+            if len(batch) >= chunk:
+                await self.session.execute(EstadualRemuneracao.__table__.insert(), batch)
+                total += len(batch)
+                batch = []
+        if batch:
+            await self.session.execute(EstadualRemuneracao.__table__.insert(), batch)
+            total += len(batch)
+        await self.session.commit()
+        return total
+
+    async def search(
+        self,
+        nome: Optional[str] = None,
+        ano: Optional[int] = None,
+        mes: Optional[str] = None,
+        cargo: Optional[str] = None,
+        orgao: Optional[str] = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        m = EstadualRemuneracao
+        filters = [m.uf == self.uf]
+        if nome:
+            filters.append(func.immutable_unaccent(m.nome).ilike(_like_pattern(nome), escape="\\"))
+        if ano:
+            filters.append(m.ano == ano)
+        if mes:
+            filters.append(m.mes == int(mes))
+        if cargo:
+            filters.append(m.cargo == cargo)
+        if orgao:
+            filters.append(m.orgao == orgao)
+        capped = select(m.id).where(*filters).limit(COUNT_CAP + 1).subquery()
+        total = (await self.session.execute(select(func.count()).select_from(capped))).scalar_one()
+        rows = await _ordered_page(self.session, m, m.nome, m.ano, m.mes, filters, limit, offset)
+        return [self.to_read(r) for r in rows], total
+
+    async def get_distinct_filters(self) -> dict[str, list[str]]:
+        m = EstadualRemuneracao
+        latest = (
+            await self.session.execute(
+                select(m.ano, m.mes)
+                .where(m.uf == self.uf)
+                .order_by(m.ano.desc(), m.mes.desc())
+                .limit(1)
+            )
+        ).first()
+        if latest is None:
+            return {"cargos": [], "orgaos": []}
+        scope = (m.uf == self.uf, m.ano == latest[0], m.mes == latest[1])
+        cargos = await self.session.execute(
+            select(m.cargo).where(*scope, m.cargo.isnot(None)).distinct().order_by(m.cargo)
+        )
+        orgaos = await self.session.execute(
+            select(m.orgao).where(*scope, m.orgao.isnot(None)).distinct().order_by(m.orgao)
+        )
+        return {
+            "cargos": [str(c) for c in cargos.scalars().all() if c],
+            "orgaos": [str(o) for o in orgaos.scalars().all() if o],
+        }
+
+    def to_read(self, r: EstadualRemuneracao) -> dict:
+        return {
+            "id": r.id,
+            "fonte": r.uf,
+            "ano_exercicio": r.ano,
+            "mes_referencia": f"{r.mes:02d}",
+            "codigo_identificacao": r.ident,
+            "codigo_matricula": r.matricula or r.ident,
+            "nome_servidor": r.nome,
+            "cpf_servidor": r.cpf_mascarado,
             "codigo_orgao": None,
             "nome_orgao": r.orgao,
             "cargo": r.cargo,
