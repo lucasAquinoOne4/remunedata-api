@@ -381,14 +381,17 @@ def sync_estadual_task():
             for uf, adapter in ADAPTERS.items():
                 repo = EstadualRepository(session, uf)
                 loaded = 0
-                for ano, mes in _recent_months(wanted + 4):
-                    if loaded >= wanted:
-                        break
-                    if await repo.month_loaded(ano, mes):
-                        loaded += 1
-                    elif await adapter.is_published(ano, mes):
-                        queued.append((uf, ano, mes))
-                        loaded += 1
+                try:
+                    for ano, mes in _recent_months(wanted + 4):
+                        if loaded >= wanted:
+                            break
+                        if await repo.month_loaded(ano, mes):
+                            loaded += 1
+                        elif await adapter.is_published(ano, mes):
+                            queued.append((uf, ano, mes))
+                            loaded += 1
+                except Exception as exc:  # uma fonte fora do ar ou bloqueada não para as outras
+                    logger.warning(f"Verificação de {uf} ignorada nesta semana: {exc}")
         return queued
 
     loop = asyncio.new_event_loop()
