@@ -17,7 +17,7 @@ from app.core.logging import get_logger
 settings = get_settings()
 logger = get_logger(__name__)
 
-_MIN_ZIP_BYTES = 1_000_000  # um ZIP real tem dezenas de MB; abaixo disso é página de erro
+_MIN_ZIP_BYTES = 100_000  # um ZIP real tem >= 500 KB (BACEN); abaixo disso é página de erro
 
 
 # categoria -> sufixo do arquivo mensal no portal
