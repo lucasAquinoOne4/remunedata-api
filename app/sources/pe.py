@@ -37,7 +37,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import httpx
 
 from app.core.logging import get_logger
-from app.sources.base import NormalRow
+from app.sources.base import ASYNC_HOOKS, SYNC_HOOKS, NormalRow
 
 logger = get_logger(__name__)
 
@@ -133,9 +133,11 @@ def pick_resource(resources: List[Dict[str, Any]], tipo: str, ano: int, mes: int
 
 
 def make_ident(matricula: Optional[str], nome: str, orgao: Optional[str]) -> str:
+    matricula = " ".join((matricula or "").split())
     if matricula:
         return matricula
-    return hashlib.md5(f"{nome}|{orgao or ''}".encode()).hexdigest()[:16]
+    key = " ".join((nome or "").upper().split())
+    return hashlib.md5(f"{key}|{' '.join((orgao or '').upper().split())}".encode()).hexdigest()[:16]
 
 
 def _decoded_lines(path: Path) -> Iterator[str]:
@@ -218,7 +220,7 @@ class PEAdapter:
         return (payload.get("result") or {}).get("resources") or []
 
     async def is_published(self, ano: int, mes: int) -> bool:
-        async with httpx.AsyncClient(timeout=60, headers=self._headers()) as client:
+        async with httpx.AsyncClient(event_hooks=ASYNC_HOOKS, timeout=60, headers=self._headers()) as client:
             resp = await client.get(PACKAGE_URL, params={"id": PACKAGE_ID})
             resp.raise_for_status()
         return pick_resource(self._extract(resp.json()), "ativos", ano, mes) is not None
@@ -248,7 +250,7 @@ class PEAdapter:
     def iter_rows(self, ano: int, mes: int, work_dir: Path) -> Iterator[NormalRow]:
         work_dir.mkdir(parents=True, exist_ok=True)
         timeout = httpx.Timeout(60.0, read=600.0)
-        with httpx.Client(
+        with httpx.Client(event_hooks=SYNC_HOOKS, 
             timeout=timeout, headers=self._headers(), follow_redirects=True
         ) as client:
             resources = self._package_resources(client)

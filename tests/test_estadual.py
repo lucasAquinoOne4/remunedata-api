@@ -200,3 +200,68 @@ async def test_carga_truncada_e_rejeitada_a_menos_que_aceite_queda(db_session):
 
     result = await short.collect_month(2081, 6, force=True, accept_shrink=True)
     assert result["registros"] == 3 and await repo.month_count(2081, 6) == 3
+
+
+def test_cpf_so_passa_mascarado():
+    from app.sources.base import safe_masked_cpf
+
+    assert safe_masked_cpf("***.236.123-**") == "***.236.123-**"
+    assert safe_masked_cpf("***236123**") == "***236123**"
+    assert safe_masked_cpf("123.456.789-09") is None  # completo: descartado
+    assert safe_masked_cpf("12345678909") is None
+    assert safe_masked_cpf("abc") is None and safe_masked_cpf(None) is None
+
+
+def test_hook_detecta_bloqueio_e_html_no_lugar_de_dados():
+    import httpx
+
+    from app.sources.base import SourceBlocked, block_guard
+
+    req = httpx.Request("GET", "https://exemplo.gov.br/x")
+    with pytest.raises(SourceBlocked):
+        block_guard(httpx.Response(403, request=req))
+    with pytest.raises(SourceBlocked):
+        block_guard(httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, request=req))
+    block_guard(httpx.Response(200, headers={"content-type": "application/json"}, request=req))
+    block_guard(httpx.Response(429, request=req))  # limite de taxa é tratado pelo adaptador
+
+
+class BlockedAdapter(FakeAdapter):
+    def iter_rows(self, ano, mes, work_dir):
+        from app.sources.base import SourceBlocked
+
+        raise SourceBlocked("HTTP 403 em teste")
+        yield  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_bloqueio_entra_em_espera_e_nao_insiste(db_session, monkeypatch):
+    from app.core import locks
+
+    calls = {}
+    monkeypatch.setattr(locks, "set_blocked", lambda uf, s: calls.setdefault("set", (uf, s)))
+    monkeypatch.setattr(locks, "blocked_remaining", lambda uf: 120 if "set" in calls else 0)
+    repo = EstadualRepository(db_session, "CE")
+    adapter = BlockedAdapter({(2081, 7): [row("1", "ANA")]})
+    collector = EstadualCollector(adapter, repo)
+
+    first = await collector.collect_month(2081, 7)
+    assert first["status"] == "blocked" and calls["set"] == ("CE", 6 * 3600)
+    assert adapter.calls == 0  # nem chegou a ler linhas
+    second = await collector.collect_month(2081, 7)
+    assert second["status"] == "blocked" and await repo.month_count(2081, 7) == 0
+
+
+def test_ce_rejeita_carga_menor_que_a_declarada(monkeypatch, tmp_path):
+    from app.sources import ce
+    from app.sources.base import SourceIncomplete
+
+    pages = {
+        1: {"sumary": {"total_records": 300, "total_pages": 2}, "data": [{"id": i} for i in range(100)]},
+        2: {"sumary": {"total_records": 300, "total_pages": 2}, "data": [{"id": i} for i in range(100)]},
+    }
+    adapter = ce.CearaAdapter()
+    monkeypatch.setattr(adapter, "_get_page", lambda client, ano, mes, page: pages[page])
+    monkeypatch.setattr(ce, "normalize_record", lambda rec: None)
+    with pytest.raises(SourceIncomplete):
+        list(adapter.iter_rows(2081, 1, tmp_path))

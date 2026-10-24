@@ -14,16 +14,18 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator
 
+from app.core import locks
 from app.core.logging import get_logger
 from app.persistence.repositories import EstadualRepository
 from app.services.people import invalidate_period_stat
-from app.sources.base import NormalRow, SourceAdapter, normalize_row
+from app.sources.base import NormalRow, SourceAdapter, SourceBlocked, normalize_row, safe_masked_cpf
 
 logger = get_logger(__name__)
 
 _NUMERIC = ("valor_bruto", "valor_liquido", "valor_descontos")
 # Carga com menos que esta fração do mês anterior é tratada como truncada e NÃO substitui o mês.
 MIN_RATIO_VS_PREVIOUS = 0.7
+BLOCK_COOLDOWN_SECONDS = 6 * 3600
 
 
 class LoadRejected(Exception):
@@ -51,7 +53,7 @@ def _prepare(uf: str, ano: int, mes: int, rows: Iterator[NormalRow]) -> Iterator
             "linha_hash": digest,
             "ident": str(row["ident"])[:40],
             "nome": str(row["nome"]).strip()[:255],
-            "cpf_mascarado": (row.get("cpf_mascarado") or None),
+            "cpf_mascarado": safe_masked_cpf(row.get("cpf_mascarado")),
             "matricula": (str(row["matricula"])[:40] if row.get("matricula") else None),
             "cargo": (str(row["cargo"])[:255] if row.get("cargo") else None),
             "orgao": (str(row["orgao"])[:255] if row.get("orgao") else None),
@@ -92,6 +94,21 @@ class EstadualCollector:
         base = {"uf": uf, "ano": ano, "mes": mes}
         if not force and await self.repo.month_loaded(ano, mes):
             return {**base, "registros": 0, "status": "already_loaded"}
+        wait = await asyncio.to_thread(locks.blocked_remaining, uf)
+        if wait > 0:
+            logger.info(f"{uf}: fonte em espera por bloqueio ({wait}s); nada foi pedido.")
+            return {**base, "registros": 0, "status": "blocked"}
+        try:
+            return await self._collect(ano, mes, force, accept_shrink, base)
+        except SourceBlocked as exc:
+            await asyncio.to_thread(locks.set_blocked, uf, BLOCK_COOLDOWN_SECONDS)
+            logger.warning(f"{uf} {mes:02d}/{ano}: fonte bloqueou o acesso ({exc}); espera de 6 h.")
+            return {**base, "registros": 0, "status": "blocked"}
+
+    async def _collect(
+        self, ano: int, mes: int, force: bool, accept_shrink: bool, base: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        uf = self.adapter.uf
         if not await self.adapter.is_published(ano, mes):
             logger.info(f"{uf} {mes:02d}/{ano}: ainda não publicado.")
             return {**base, "registros": 0, "status": "empty"}

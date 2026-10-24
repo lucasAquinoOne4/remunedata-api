@@ -18,7 +18,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from app.core.logging import get_logger
-from app.sources.base import NormalRow
+from app.sources.base import ASYNC_HOOKS, SYNC_HOOKS, SourceIncomplete, NormalRow
 
 logger = get_logger(__name__)
 
@@ -170,7 +170,7 @@ class CearaAdapter:
         )
 
     async def is_published(self, ano: int, mes: int) -> bool:
-        with httpx.Client(timeout=TIMEOUT) as client:
+        with httpx.Client(event_hooks=SYNC_HOOKS, timeout=TIMEOUT) as client:
             try:
                 resp = client.get(BASE_URL, params={"year": ano, "month": mes, "page": 1})
                 if resp.status_code != 200:
@@ -181,17 +181,19 @@ class CearaAdapter:
         return _to_int(_summary(payload).get("total_records")) > 0 and bool(_records(payload))
 
     def iter_rows(self, ano: int, mes: int, work_dir: Path) -> Iterator[NormalRow]:
-        with httpx.Client(timeout=TIMEOUT) as client:
-            page, total_pages = 1, None
+        with httpx.Client(event_hooks=SYNC_HOOKS, timeout=TIMEOUT) as client:
+            page, total_pages, declared, seen = 1, None, 0, 0
             while total_pages is None or page <= total_pages:
                 payload = self._get_page(client, ano, mes, page)
                 if total_pages is None:
                     total_pages = _to_int(_summary(payload).get("total_pages"))
+                    declared = _to_int(_summary(payload).get("total_records"))
                 records = _records(payload)
                 if not records:
                     if total_pages and page <= total_pages:
                         raise CearaFetchError(f"CE {mes:02d}/{ano}: página {page} vazia")
-                    return
+                    break
+                seen += len(records)
                 for rec in records:
                     row = normalize_record(rec)
                     if row is not None:
@@ -199,6 +201,9 @@ class CearaAdapter:
                 if page % 100 == 0:
                     logger.info(f"CE {mes:02d}/{ano}: página {page}/{total_pages}")
                 page += 1
+            # a própria API declara o total; menos que ~99% dele é carga truncada
+            if declared and seen < declared * 0.99:
+                raise SourceIncomplete(f"CE {mes:02d}/{ano}: {seen} registros de {declared} declarados")
 
 
 ADAPTER = CearaAdapter()

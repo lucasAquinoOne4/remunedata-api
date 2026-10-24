@@ -28,6 +28,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.sources.base import ASYNC_HOOKS, SYNC_HOOKS
+
 from app.core.config import get_settings
 
 API = "https://api.dadosjusbr.org/v2"
@@ -103,7 +105,7 @@ class JUAdapter:
 
     async def is_published(self, ano: int, mes: int) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_HEADERS) as client:
+            async with httpx.AsyncClient(event_hooks=ASYNC_HOOKS, timeout=_TIMEOUT, headers=_HEADERS) as client:
                 for orgao in _orgaos():
                     r = await client.get(f"{API}/dados/{orgao}/{ano}/{mes}")
                     if r.status_code == 200 and (r.json().get("pacote_de_dados") or {}).get("url"):
@@ -116,7 +118,7 @@ class JUAdapter:
         work_dir = Path(work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
         found = 0
-        with httpx.Client(timeout=_TIMEOUT, headers=_HEADERS) as client:
+        with httpx.Client(event_hooks=SYNC_HOOKS, timeout=_TIMEOUT, headers=_HEADERS) as client:
             for orgao in _orgaos():
                 meta = self._month(client, orgao, ano, mes)
                 if meta is None:

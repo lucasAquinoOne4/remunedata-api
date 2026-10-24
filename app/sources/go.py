@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
-from app.sources.base import NormalRow
+from app.sources.base import ASYNC_HOOKS, SYNC_HOOKS, NormalRow
 
 BASE_URL = "https://dadosabertos.go.gov.br"
 PACKAGE_URL = f"{BASE_URL}/api/3/action/package_show"
@@ -227,7 +227,7 @@ class GoAdapter:
 
     # ---------- contrato ----------
     def _is_published_sync(self, ano: int, mes: int) -> bool:
-        with httpx.Client(timeout=TIMEOUT, follow_redirects=True) as client:
+        with httpx.Client(event_hooks=SYNC_HOOKS, timeout=TIMEOUT, follow_redirects=True) as client:
             res = self._resource(client, ano, mes)
             if not res:
                 return False
@@ -251,7 +251,7 @@ class GoAdapter:
         return await asyncio.to_thread(self._is_published_sync, ano, mes)
 
     def iter_rows(self, ano: int, mes: int, work_dir: Path) -> Iterator[NormalRow]:
-        with httpx.Client(timeout=TIMEOUT, follow_redirects=True) as client:
+        with httpx.Client(event_hooks=SYNC_HOOKS, timeout=TIMEOUT, follow_redirects=True) as client:
             res = self._resource(client, ano, mes)
             if not res:
                 raise GoSourceError(f"GO: sem recurso para {mes:02d}/{ano}")

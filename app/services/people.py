@@ -430,19 +430,18 @@ async def refresh_person_latest(session: AsyncSession, fonte: str) -> int:
             select(
                 literal(fonte),
                 m.ident,
-                m.matricula,
-                m.nome,
-                m.cargo,
-                m.orgao,
-                m.cpf_mascarado,
+                func.max(m.matricula),
+                func.max(m.nome),
+                func.max(m.cargo),
+                func.max(m.orgao),
+                func.max(m.cpf_mascarado),
                 literal(ano),
                 literal(mes),
-                m.valor_bruto,
-                m.valor_liquido,
+                func.sum(m.valor_bruto),
+                func.sum(m.valor_liquido),
             )  # fmt: skip
             .where(m.uf == fonte, m.ano == ano, m.mes == mes)
-            .distinct(m.ident)
-            .order_by(m.ident, m.id)
+            .group_by(m.ident)
         )
     else:
         m = FederalRemuneracao
@@ -699,7 +698,7 @@ async def _estadual_person(session: AsyncSession, uf: str, ident: str) -> Option
             await session.execute(
                 select(m)
                 .where(m.uf == uf, m.ident == ident)
-                .order_by(m.ano, m.mes, m.id)
+                .order_by(m.ano.desc(), m.mes.desc(), m.id)
                 .limit(480)
             )
         )
@@ -708,6 +707,7 @@ async def _estadual_person(session: AsyncSession, uf: str, ident: str) -> Option
     )
     if not rows:
         return None
+    rows = list(reversed(rows))  # lidas do mais recente (limite); o histórico segue em ordem crescente
     # uma linha por competência (soma vínculos do mesmo mês)
     by_period: Dict[tuple, dict] = {}
     for r in rows:

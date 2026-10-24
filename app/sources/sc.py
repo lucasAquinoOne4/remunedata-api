@@ -10,7 +10,8 @@ Fonte (confirmada em 22/10/2026):
     CargaHorariaServidor;Situacao;ValorBruto. Sem paginação (~22 MB para os ativos de um mês).
   - O servidor ignora `Range`; baixa-se o arquivo inteiro em streaming para o disco.
   - NÃO há matrícula, rubricas, mês/ano nas colunas (só no nome do recurso) nem valor líquido:
-    `valor_liquido` e `valor_descontos` ficam 0.0 (a fonte só publica o bruto).
+    `valor_liquido` e `valor_descontos` ficam 0.0 (a fonte só publica o bruto); a interface os mostra
+    como "não informado" (frontend: FONTES_SEM_LIQUIDO).
   - Licença Creative Commons Atribuição (cc-by): citar "Governo de Santa Catarina".
 
 Regra de escolha do recurso (pode haver duplicatas, p.ex. versões reprocessadas): entre os CSV cujo
@@ -31,6 +32,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
+
+from app.sources.base import ASYNC_HOOKS, SYNC_HOOKS
 
 PACKAGE_URL = "https://dados.sc.gov.br/api/3/action/package_show"
 PACKAGE_ID = "remuneracaoservidores"
@@ -174,7 +177,7 @@ class SCAdapter:
 
     async def is_published(self, ano: int, mes: int) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_HEADERS) as client:
+            async with httpx.AsyncClient(event_hooks=ASYNC_HOOKS, timeout=_TIMEOUT, headers=_HEADERS) as client:
                 resp = await client.get(PACKAGE_URL, params={"id": PACKAGE_ID})
                 resp.raise_for_status()
                 return "ativos" in pick_resources(resp.json(), ano, mes)
@@ -184,7 +187,7 @@ class SCAdapter:
     def iter_rows(self, ano: int, mes: int, work_dir: Path) -> Iterator[Dict[str, Any]]:
         work_dir = Path(work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
-        with httpx.Client(timeout=_TIMEOUT, headers=_HEADERS, follow_redirects=True) as client:
+        with httpx.Client(event_hooks=SYNC_HOOKS, timeout=_TIMEOUT, headers=_HEADERS, follow_redirects=True) as client:
             resp = client.get(PACKAGE_URL, params={"id": PACKAGE_ID})
             resp.raise_for_status()
             resources = pick_resources(resp.json(), ano, mes)

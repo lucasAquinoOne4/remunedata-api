@@ -7,8 +7,51 @@ entrega linhas NORMALIZADAS; o resto do sistema (coletor, tabela, busca, perfil,
 comum. Ver docs/PLANO_INTEGRACAO_FONTES.md e o ADR 0010.
 """
 
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Protocol
+
+import httpx
+
+
+class SourceBlocked(RuntimeError):
+    """A fonte nos bloqueou (401/403, WAF ou HTML no lugar de dados). Não se insiste nem se contorna:
+    o coletor entra em espera (cooldown) e tenta de novo mais tarde."""
+
+
+class SourceIncomplete(RuntimeError):
+    """A fonte entregou menos registros do que ela mesma declara; a carga não deve ser gravada."""
+
+
+def _check(response: httpx.Response) -> None:
+    if response.status_code in (401, 403):
+        raise SourceBlocked(f"HTTP {response.status_code} em {response.request.url.host}")
+    ctype = response.headers.get("content-type", "").lower()
+    if response.status_code == 200 and "text/html" in ctype:
+        raise SourceBlocked(f"HTML no lugar de dados em {response.request.url.host} (possível WAF)")
+
+
+def block_guard(response: httpx.Response) -> None:
+    _check(response)
+
+
+async def async_block_guard(response: httpx.Response) -> None:
+    _check(response)
+
+
+SYNC_HOOKS = {"response": [block_guard]}
+ASYNC_HOOKS = {"response": [async_block_guard]}
+
+# CPF só pode chegar mascarado: no máximo 6 dígitos visíveis (ex.: '***.236.123-**').
+_MASKED_CPF = re.compile(r"^[\d.*\-\s]+$")
+
+
+def safe_masked_cpf(value: Any) -> Optional[str]:
+    """Devolve o CPF só se estiver mascarado (≤ 6 dígitos); qualquer coisa que pareça CPF completo vira None."""
+    text = str(value or "").strip()
+    if not text or not _MASKED_CPF.match(text):
+        return None
+    return text if sum(c.isdigit() for c in text) <= 6 else None
 
 # Campos de uma linha normalizada (todos opcionais, exceto nome e ident):
 #   ident          chave ESTÁVEL da pessoa entre meses (matrícula, ou md5 de nome|órgão quando a

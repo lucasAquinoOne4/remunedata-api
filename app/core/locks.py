@@ -70,6 +70,15 @@ def ban_remaining() -> float:
 _RUNNING_TTL = 6 * 3600
 
 
+def set_blocked(fonte: str, seconds: int) -> None:
+    """Cooldown de uma fonte que nos bloqueou: nada é pedido a ela até expirar."""
+    _client().set(f"source:blocked:{fonte}", "1", ex=seconds)
+
+
+def blocked_remaining(fonte: str) -> int:
+    return max(0, int(_client().ttl(f"source:blocked:{fonte}")))
+
+
 def set_running(fonte: str, running: bool) -> None:
     client = _client()
     key = f"load:running:{fonte}"
