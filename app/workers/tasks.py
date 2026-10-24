@@ -452,3 +452,23 @@ def refresh_tse_task(anos: list[int]):
     finally:
         loop.run_until_complete(async_engine.dispose())
         loop.close()
+
+
+@celery_app.task(name="refresh_rfb_task")
+def refresh_rfb_task(dir_path: str):
+    """Carrega a participação societária (CNPJ/RFB) já filtrada pelo ETL em `dir_path`. Manual."""
+    from app.services import rfb
+
+    async def _run():
+        async with async_session_maker() as session:
+            result = await rfb.load_dir(session, dir_path)
+        await cache.clear_prefix("remuneration:person")
+        return result
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()

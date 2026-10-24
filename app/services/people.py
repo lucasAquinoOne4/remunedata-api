@@ -916,10 +916,20 @@ async def person(
             candidaturas = await tse.lookup(session, ident_data["nome"], cpf_core(ident_data.get("cpf_mascarado")))
     except Exception:  # enriquecimento nunca impede o perfil
         candidaturas = []
+    participacoes: list = []
+    try:
+        from app.services import rfb
+
+        core = cpf_core(ident_data.get("cpf_mascarado"))
+        if fonte != "SENADO" and core:  # sem CPF central não há cruzamento seguro
+            participacoes = await rfb.lookup(session, ident_data["nome"], core)  # datas já em texto
+    except Exception:  # enriquecimento nunca impede o perfil
+        participacoes = []
     return {
         "fonte": fonte,
         "contexto_base": contexto_base,
         "candidaturas_tse": candidaturas,
+        "participacoes_societarias": participacoes,
         "id": base["id_out"],
         "identidade": ident_data,
         "historico": hist,

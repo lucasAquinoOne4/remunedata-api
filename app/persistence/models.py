@@ -509,3 +509,66 @@ class TseBem(Base):
     tipo: Mapped[str] = mapped_column(String(100), primary_key=True)
     quantidade: Mapped[int] = mapped_column(Integer, nullable=False)
     valor: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class RfbEmpresa(Base):
+    """
+    Empresa (CNPJ básico) da Receita Federal em que alguma pessoa de interesse é sócia. Só entram as
+    empresas ligadas a sócios que casaram com nossas pessoas; não guarda endereço, telefone nem e-mail.
+    """
+
+    __tablename__ = "rfb_empresa"
+
+    cnpj_basico: Mapped[str] = mapped_column(String(8), primary_key=True)
+    razao_social: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    nome_fantasia: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    natureza_juridica_cod: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    capital_social: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    porte_cod: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    situacao_cadastral_cod: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    data_situacao: Mapped[Optional[Any]] = mapped_column(Date, nullable=True)
+    data_inicio_atividade: Mapped[Optional[Any]] = mapped_column(Date, nullable=True)
+    cnae_principal: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    uf: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
+    municipio_cod: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
+
+class RfbSocio(Base):
+    """
+    Participação societária. Guarda SÓ os 6 dígitos centrais do CPF (`cpf_core`), o mesmo recorte
+    que as fontes de servidores mascaram: o CPF completo não é gravado.
+    """
+
+    __tablename__ = "rfb_socio"
+
+    cnpj_basico: Mapped[str] = mapped_column(String(8), primary_key=True)
+    nome_norm: Mapped[str] = mapped_column(String(255), primary_key=True)
+    cpf_core: Mapped[str] = mapped_column(String(6), primary_key=True)
+    nome_socio: Mapped[str] = mapped_column(String(255), nullable=False)
+    qualificacao_cod: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    data_entrada: Mapped[Optional[Any]] = mapped_column(Date, nullable=True)
+    faixa_etaria: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+
+    __table_args__ = (Index("ix_rfb_socio_cpf_nome", "cpf_core", "nome_norm"),)
+
+
+class RfbDominio(Base):
+    """Tabelas de domínio da Receita: qualificação, natureza jurídica, CNAE, porte e situação."""
+
+    __tablename__ = "rfb_dominio"
+
+    tipo: Mapped[str] = mapped_column(String(20), primary_key=True)
+    cod: Mapped[str] = mapped_column(String(10), primary_key=True)
+    descricao: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class RfbCarga(Base):
+    """Competência (mês) do dado aberto de CNPJ carregada, com as contagens da carga."""
+
+    __tablename__ = "rfb_carga"
+
+    mes: Mapped[str] = mapped_column(String(7), primary_key=True)
+    carregado_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    contagens: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

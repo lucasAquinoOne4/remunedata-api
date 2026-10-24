@@ -151,7 +151,7 @@ async def db_session(db_engine):
             text(
                 "TRUNCATE execution_annual, execution_monthly, remuneration_collected, "
                 "user_subscription, subscription_plan, billing_transaction, support_message, "
-                "senado_remuneracao, federal_remuneracao, person_latest, period_stat, estadual_remuneracao, tse_candidato, tse_bem CASCADE"
+                "senado_remuneracao, federal_remuneracao, person_latest, period_stat, estadual_remuneracao, tse_candidato, tse_bem, rfb_empresa, rfb_socio, rfb_dominio, rfb_carga CASCADE"
             )
         )
         await session.commit()
