@@ -424,3 +424,31 @@ def refresh_economia_task():
     finally:
         loop.run_until_complete(async_engine.dispose())
         loop.close()
+
+
+@celery_app.task(name="refresh_tse_task")
+def refresh_tse_task(anos: list[int]):
+    """Carrega candidaturas e bens do TSE (dados abertos) das eleições `anos`. Manual: o TSE publica de 2 em 2 anos."""
+    import tempfile
+    from pathlib import Path
+
+    from app.services import tse
+
+    async def _run():
+        results = []
+        for ano in anos:
+            with tempfile.TemporaryDirectory(prefix="tse-") as tmp:
+                cand = await asyncio.to_thread(tse.download, "consulta_cand", ano, Path(tmp))
+                bem = await asyncio.to_thread(tse.download, "bem_candidato", ano, Path(tmp))
+                async with async_session_maker() as session:
+                    results.append(await tse.load_year(session, ano, cand, bem))
+        await cache.clear_prefix("remuneration:person")
+        return results
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.run_until_complete(async_engine.dispose())
+        loop.close()

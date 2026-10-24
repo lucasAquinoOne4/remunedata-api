@@ -474,3 +474,38 @@ class TetoConstitucional(Base):
     valor: Mapped[float] = mapped_column(Float, nullable=False)
     norma: Mapped[str] = mapped_column(String(200), nullable=False)
     url_norma: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+
+
+class TseCandidato(Base):
+    """
+    Candidatura do TSE (dados abertos). Guarda SÓ os 6 dígitos centrais do CPF (`cpf_core`), o mesmo
+    recorte que as fontes de servidores mascaram: o CPF completo e o e-mail são descartados na carga.
+    """
+
+    __tablename__ = "tse_candidato"
+
+    ano_eleicao: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sq_candidato: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    nome_norm: Mapped[str] = mapped_column(String(255), nullable=False)
+    cpf_core: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
+    uf: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
+    cargo: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    partido: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    ocupacao: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    situacao: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    resultado: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    __table_args__ = (Index("ix_tse_cand_cpf_nome", "cpf_core", "nome_norm"),)
+
+
+class TseBem(Base):
+    """Patrimônio declarado à Justiça Eleitoral, somado por candidatura e tipo de bem."""
+
+    __tablename__ = "tse_bem"
+
+    ano_eleicao: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sq_candidato: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(100), primary_key=True)
+    quantidade: Mapped[int] = mapped_column(Integer, nullable=False)
+    valor: Mapped[float] = mapped_column(Float, nullable=False)

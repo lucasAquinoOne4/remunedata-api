@@ -908,9 +908,18 @@ async def person(
             }
     except Exception:  # contexto é enriquecimento: nunca impede o perfil
         pass
+    candidaturas: list = []
+    try:
+        from app.services import tse
+
+        if fonte != "SENADO":  # Senado não publica CPF: sem CPF não há cruzamento seguro
+            candidaturas = await tse.lookup(session, ident_data["nome"], cpf_core(ident_data.get("cpf_mascarado")))
+    except Exception:  # enriquecimento nunca impede o perfil
+        candidaturas = []
     return {
         "fonte": fonte,
         "contexto_base": contexto_base,
+        "candidaturas_tse": candidaturas,
         "id": base["id_out"],
         "identidade": ident_data,
         "historico": hist,
