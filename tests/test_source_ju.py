@@ -40,3 +40,18 @@ def test_orgaos_configurados_sao_validados(monkeypatch):
 
 def test_adaptador_registrado():
     assert ADAPTERS["JU"].uf == "JU"
+
+
+def test_mes_nao_publicado_204_ou_404_nao_quebra(monkeypatch):
+    import httpx
+
+    class FakeClient:
+        def __init__(self, status):
+            self.status = status
+
+        def get(self, url):
+            return httpx.Response(self.status, request=httpx.Request("GET", url))
+
+    adapter = ju.JUAdapter()
+    assert adapter._month(FakeClient(204), "tredf", 2026, 9) is None
+    assert adapter._month(FakeClient(404), "tredf", 2026, 9) is None

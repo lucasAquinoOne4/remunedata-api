@@ -97,7 +97,7 @@ class JUAdapter:
 
     def _month(self, client: httpx.Client, orgao: str, ano: int, mes: int) -> Dict[str, Any] | None:
         r = client.get(f"{API}/dados/{orgao}/{ano}/{mes}")
-        if r.status_code == 404:
+        if r.status_code in (204, 404):  # 204: o órgão ainda não publicou o mês
             return None
         r.raise_for_status()
         data = r.json()
@@ -109,7 +109,7 @@ class JUAdapter:
                 for orgao in _orgaos():
                     r = await client.get(f"{API}/dados/{orgao}/{ano}/{mes}")
                     if r.status_code == 200 and (r.json().get("pacote_de_dados") or {}).get("url"):
-                        return True
+                        return True  # 204/404: este órgão ainda não publicou; tenta o próximo
         except (httpx.HTTPError, ValueError):
             return False
         return False
