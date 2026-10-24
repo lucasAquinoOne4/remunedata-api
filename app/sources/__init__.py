@@ -9,7 +9,7 @@ from typing import Dict
 
 from app.sources.base import SourceAdapter
 
-MODULES = ("ce", "pe", "go", "sc")
+MODULES = ("ce", "pe", "go", "sc", "ju")
 
 
 def load_adapters() -> Dict[str, SourceAdapter]:

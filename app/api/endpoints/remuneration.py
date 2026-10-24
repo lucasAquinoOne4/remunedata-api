@@ -35,7 +35,7 @@ from app.persistence.repositories import (
 from app.services import people
 from app.services.people import norm_name
 
-Fonte = Literal["DF", "SENADO", "FEDERAL", "CE", "PE", "GO", "SC"]
+Fonte = Literal["DF", "SENADO", "FEDERAL", "CE", "PE", "GO", "SC", "JU"]
 
 router = APIRouter()
 

@@ -171,7 +171,7 @@ def test_registro_de_adaptadores_ignora_modulos_ausentes():
     from app.sources import load_adapters
 
     assert isinstance(load_adapters(), dict)
-    assert set(load_adapters()) <= {"CE", "PE", "GO", "SC"}
+    assert set(load_adapters()) <= {"CE", "PE", "GO", "SC", "JU"}
     assert isinstance(ADAPTERS, dict)
     with patch("app.sources.MODULES", ("nao_existe",)):
         assert load_adapters() == {}

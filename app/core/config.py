@@ -127,6 +127,10 @@ class Settings(BaseSettings):
         ge=1,
         le=12,
     )
+    dadosjusbr_orgaos: str = Field(
+        default="tjdft,mpdft,tredf",
+        description="Órgãos de Justiça/MP do DadosJusBR (ids da API, separados por vírgula) carregados na fonte JU",
+    )
     transparencia_batch_size: int = Field(
         default=1,
         description="Páginas buscadas em paralelo por lote (reduzir se a API responder 429)",
